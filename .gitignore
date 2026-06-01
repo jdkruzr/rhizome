@@ -1,0 +1,22 @@
+# Kotlin / Gradle
+.gradle/
+.kotlin/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# Go
+/server-go/bin/
+*.test
+*.out
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Local SQLite scratch (examples)
+*.sqlite
+*.sqlite-*
+*.db
