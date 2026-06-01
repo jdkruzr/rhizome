@@ -49,4 +49,4 @@ examples/        a toy schema + runnable client and server + run-demo
 
 ## License
 
-TBD (Apache-2.0 intended).
+MIT — see [LICENSE](LICENSE).
