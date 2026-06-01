@@ -49,4 +49,4 @@ examples/        a toy schema + runnable client and server + run-demo
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
