@@ -13,6 +13,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "rhizome-client"
 
-// rhizome-sqlite (P2) joins when the SQLite adapter lands.
 include(":rhizome-core")
+include(":rhizome-sqlite")
 include(":rhizome-http")
