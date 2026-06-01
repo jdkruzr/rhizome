@@ -1,0 +1,16 @@
+{
+  "category": "wire-codec",
+  "name": "wire-codec-roundtrip",
+  "description": "encode(decode(wire)) == wire for each column type — idempotency on the wire form, pinning the codec across languages (notably ColorInt unsigned int64 and Blob base64).",
+  "cases": [
+    { "type": "Text", "wire": "hello" },
+    { "type": "Text", "wire": null },
+    { "type": "Int", "wire": -5 },
+    { "type": "Timestamp", "wire": 1717200000000 },
+    { "type": "Real", "wire": 3.5 },
+    { "type": "Bool", "wire": true },
+    { "type": "ColorInt", "wire": 4278190080 },
+    { "type": "ColorInt", "wire": 0 },
+    { "type": "Blob", "wire": "AAECf/8=" }
+  ]
+}

@@ -13,5 +13,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "rhizome-client"
 
-// Modules join as their phases land. rhizome-sqlite (P2) + rhizome-http (P1) are added then.
+// rhizome-sqlite (P2) joins when the SQLite adapter lands.
 include(":rhizome-core")
+include(":rhizome-http")

@@ -1,25 +1,49 @@
 package io.rhizome.core
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
  * The Kotlin half of the dual-language conformance contract: load and run the shared vectors in
- * /conformance/vectors (see /conformance/README.md). This is the Phase-0 "running harness" — it
- * DISCOVERS and STRUCTURALLY VALIDATES every vector and dispatches on category. The real `merge`
- * assertion lands with the merge implementation (Phase 1); until then a merge vector is validated
- * for shape only (no silent pass: the gap is recorded in the spec/conformance status table).
+ * /conformance/vectors (see /conformance/README.md). `merge` vectors are asserted against the
+ * deterministic LWW merge using ForestNote's registry for knownCols; other categories are
+ * dispatched and counted (their assertions land with their implementations — no silent pass).
  */
 class ConformanceTest {
 
+    @Serializable
+    private data class ExpectedRow(
+        val pk: String,
+        @SerialName("site_id") val siteId: String,
+        @SerialName("op_seq") val opSeq: Long,
+        @SerialName("op_ts") val opTs: Long,
+        val cols: JsonObject = JsonObject(emptyMap()),
+    )
+
+    @Serializable
+    private data class WireCase(val type: String, val wire: JsonElement = JsonNull)
+
+    @Serializable
+    private data class Vector(
+        val category: String,
+        val name: String,
+        val description: String = "",
+        val ops: List<WireOp> = emptyList(),
+        @SerialName("expected_state") val expectedState: Map<String, List<ExpectedRow>> = emptyMap(),
+        val cases: List<WireCase> = emptyList(),
+    )
+
     private val json = Json { ignoreUnknownKeys = true }
+    private val knownCols = ForestNoteRegistry.registry.knownCols
 
     private fun vectorsDir(): File {
         var dir: File? = File(System.getProperty("user.dir")).absoluteFile
@@ -32,34 +56,50 @@ class ConformanceTest {
     }
 
     @Test
-    fun vectorsParseAndDispatch() {
-        val dir = vectorsDir()
-        val files = dir.listFiles { f -> f.name.endsWith(".vector.json") }?.sortedBy { it.name }
-            ?: emptyList()
-        assertTrue(files.isNotEmpty(), "no vectors found in $dir")
+    fun runVectors() {
+        val files = vectorsDir().listFiles { f -> f.name.endsWith(".vector.json") }
+            ?.sortedBy { it.name } ?: emptyList()
+        assertTrue(files.isNotEmpty(), "no vectors found")
 
         var merge = 0
-        var skipped = 0
+        var wireCodec = 0
+        var deferred = 0
         for (f in files) {
-            val v = json.parseToJsonElement(f.readText()).jsonObject
-            val name = v["name"]?.jsonPrimitive?.content
-                ?: fail("${f.name}: missing name")
-            when (val category = v["category"]?.jsonPrimitive?.content
-                ?: fail("${f.name}: missing category")) {
-                "merge" -> {
-                    assertTrue(
-                        (v["ops"]?.jsonArray?.size ?: 0) > 0,
-                        "$name: merge vector has no ops",
-                    )
-                    assertTrue(
-                        v["expected_state"] is JsonObject,
-                        "$name: merge vector has no expected_state",
-                    )
-                    merge++ // merge assertion pending Phase 1 (Merge impl)
-                }
-                else -> skipped++ // category not yet handled by the Kotlin runner
+            val v = json.decodeFromString(Vector.serializer(), f.readText())
+            when (v.category) {
+                "merge" -> { assertMerge(v); merge++ }
+                "wire-codec" -> { assertWireCodec(v); wireCodec++ }
+                else -> deferred++ // category not yet handled by the Kotlin runner
             }
         }
-        println("conformance: ${files.size} vectors ($merge merge structurally valid, $skipped other categories deferred)")
+        assertTrue(merge > 0, "expected at least one merge vector")
+        println("conformance: ${files.size} vectors ($merge merge, $wireCodec wire-codec asserted, $deferred deferred)")
+    }
+
+    private fun assertWireCodec(v: Vector) {
+        for ((i, case) in v.cases.withIndex()) {
+            val type = ColumnType.valueOf(case.type)
+            val reEncoded = WireCodec.encode(type, WireCodec.decode(type, case.wire))
+            assertEquals(case.wire, reEncoded, "${v.name} / case $i (${case.type}): wire round-trip")
+        }
+    }
+
+    private fun assertMerge(v: Vector) {
+        val winners = Merge.merge(v.ops.map { it.toOp() }, knownCols)
+        for ((table, rows) in v.expectedState) {
+            val expected = rows.associateBy { it.pk }
+            val got = winners.entries.filter { it.key.table == table }.associate { it.key.pk to it.value }
+            assertEquals(
+                expected.keys, got.keys,
+                "${v.name} / $table: surviving pk set mismatch",
+            )
+            for ((pk, er) in expected) {
+                val w = got.getValue(pk)
+                assertEquals(er.siteId, w.siteId, "${v.name} / $table / $pk: site_id")
+                assertEquals(er.opSeq, w.opSeq, "${v.name} / $table / $pk: op_seq")
+                assertEquals(er.opTs, w.opTs, "${v.name} / $table / $pk: op_ts")
+                assertEquals(er.cols, w.cols, "${v.name} / $table / $pk: cols")
+            }
+        }
     }
 }
