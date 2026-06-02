@@ -1,19 +1,39 @@
 plugins {
     kotlin("jvm") version "2.2.0"
+    `maven-publish`
 }
+
+group = "io.rhizome"
+version = "0.8.0"
 
 repositories {
     mavenCentral()
 }
 
+// Target JVM 11 bytecode (major 55) so the jar dexes under consumers' Android toolchains (ForestNote
+// is AGP 8.7 / minSdk 30 — JVM 22 bytecode would not dex). The compiler still runs on JDK 25.
 java {
-    sourceCompatibility = JavaVersion.VERSION_22
-    targetCompatibility = JavaVersion.VERSION_22
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+    withSourcesJar()
 }
 
 kotlin {
+    // See rhizome-core: emit Kotlin 2.0-compatible artifacts so ForestNote's 2.0.21 compiler can
+    // consume them, while still building with the 2.2.0 compiler on JDK 25.
+    coreLibrariesVersion = "2.0.21"
     compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_22
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
+        languageVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0
+        apiVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0
+    }
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            from(components["java"])
+        }
     }
 }
 
