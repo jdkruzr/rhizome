@@ -26,16 +26,47 @@ Two implementations, one frozen contract:
 - `server-go/` — Go relay server.
 - `conformance/` — language-neutral JSON vectors; the executable definition of the contract.
 
+## Quickstart
+
+Watch two clients converge through a relay — create, a conflicting edit, and a delete:
+
+```sh
+cd examples && ./run-demo
+```
+
+Prerequisites: **Go ≥ 1.25** on your `PATH` and a **JDK** (the client builds via the Gradle
+wrapper). No network access needed — the example server resolves the library through a local
+`replace` directive and the Kotlin client is a subproject of `client-kotlin`. See
+[`examples/README.md`](examples/README.md) for the step-by-step walkthrough and how to drive the
+pieces by hand.
+
+To integrate RhizomeSync into your own app, follow the [integration guide](spec/integrating.md).
+
+## Documentation
+
+- **[Integration guide](spec/integrating.md)** — from nothing to two converging devices: declare a
+  registry, stand up a relay, wire a client, trigger sync.
+- **[Architecture & rationale](spec/architecture.md)** — the design choices, where this sits vs.
+  PowerSync / CRDTs / Couchbase, and the two owned trade-offs.
+- **The contract** (`spec/`): [protocol](spec/protocol.md) · [merge (LWW)](spec/merge.md) ·
+  [HLC](spec/hlc.md) · [schema registry](spec/schema-registry.md) ·
+  [compaction](spec/compaction.md) · [schema evolution](spec/schema-evolution.md) ·
+  [conformance policy](spec/conformance.md)
+- **[Conformance vectors](conformance/README.md)** — the vector format and how each side consumes
+  the single source of truth.
+
 ## Not in scope (by design)
 
 Sync **buckets** / partial replication, **PATCH** (partial-column) ops, and **multi-tenancy**.
 Every device holds everything; one user per server instance. (These are documented upgrade paths,
-not present in v1 — see `spec/` Appendix discussion.)
+not present in v1 — see the [architecture doc](spec/architecture.md).)
 
 ## Status
 
-Pre-release. Extracted and generalized from the ForestNote↔UltraBridge sync engine. See
-`spec/` for the contract and the repo's implementation plan for phase status.
+Pre-release. Extracted and generalized from the ForestNote↔UltraBridge sync engine. The library,
+the Go relay, the HLC, server-side compaction, and the runnable examples are built and pass a
+dual-language conformance suite; adopting it back into ForestNote + UltraBridge is the remaining
+step. See `spec/` for the contract.
 
 ## Layout
 

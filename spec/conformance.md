@@ -23,12 +23,17 @@ contract; this file records the *policy*.
 
 | Category | Status | What it asserts |
 |---|---|---|
-| `merge` | **present** (23 vectors) | `normalize` + LWW `merge` → `expected_state` |
-| `schema-hash` | planned (P1/P3) | registry → canonical string → `SCHEMA_HASH` (incl. the v3 guard) |
-| `wire-codec` | planned (P1) | `decode(encode(v)) == v` + exact JSON per column type (ColorInt, Blob) |
-| `hlc` | planned (P4) | stamp/bump/compare; mixed legacy-`wall_ts`/HLC; causal-inversion |
-| `compaction` | planned (P5) | collapse-superseded; watermark tombstone purge; `cursor=0` rebuild |
+| `merge` | **asserted both sides** (23 vectors) | `normalize` + LWW `merge` → `expected_state` |
+| `wire-codec` | **asserted both sides** (1 vector) | `encode(decode(wire)) == wire` per column type (incl. ColorInt, Blob) |
+| `hlc` | **asserted both sides** (2 vectors) | local-stamp / receive-bump arithmetic; mixed legacy-`wall_ts`/HLC interop |
+| `schema-hash` | **asserted both sides** (guard tests) | registry → canonical string → `SCHEMA_HASH`, incl. the v3 guard (a registry guard test on each side, not a JSON vector) |
+| `compaction` | **asserted in Go; deferred in Kotlin** (4 vectors) | collapse-superseded; watermark tombstone purge (no-zombie); all-rules mix. Server-only, so the Kotlin runner counts it deferred (see §Policy) |
 | `schema-evolution` | planned (P8) | one-shot cursor reset on hash change |
+
+The Go runner currently asserts **23 merge + 1 wire-codec + 2 hlc + 4 compaction**, 0 skipped; the
+Kotlin runner asserts the same merge/wire-codec/hlc set and *defers* the server-only `compaction`
+category (logged, not silent — see Policy). `schema-hash` is pinned by a registry guard test on each
+side rather than a JSON vector, because it asserts a registry→hash derivation, not an op transform.
 
 ## Provenance
 
