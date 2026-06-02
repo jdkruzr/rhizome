@@ -1,0 +1,15 @@
+{
+  "category": "compaction",
+  "name": "compaction-collapse-superseded",
+  "description": "Rule 1: three live versions of one row collapse to the LWW winner, kept at its ORIGINAL seq (3) — no renumbering (rule 3). watermark 0 (no tombstone work).",
+  "tombstone_cols": { "notebook": "deleted_at" },
+  "watermark": 0,
+  "log": [
+    { "seq": 1, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 1, "op_ts": 100, "cols": { "name": "v1", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 2, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 2, "op_ts": 200, "cols": { "name": "v2", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 3, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 3, "op_ts": 300, "cols": { "name": "v3", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } }
+  ],
+  "expected_log": [
+    { "seq": 3, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 3, "op_ts": 300, "cols": { "name": "v3", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } }
+  ]
+}

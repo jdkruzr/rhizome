@@ -1,0 +1,14 @@
+{
+  "category": "compaction",
+  "name": "compaction-tombstone-kept-below-watermark",
+  "description": "Rule 2 (no-zombie): create then delete a row. The surviving op is a tombstone at seq 2, but watermark is 1 — a replica is still behind the death — so it MUST be kept, or that replica resurrects the row.",
+  "tombstone_cols": { "notebook": "deleted_at" },
+  "watermark": 1,
+  "log": [
+    { "seq": 1, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 1, "op_ts": 100, "cols": { "name": "Journal", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 2, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 2, "op_ts": 200, "cols": { "name": "Journal", "sort_order": 0, "created_at": 100, "deleted_at": 200, "folder_id": null } } }
+  ],
+  "expected_log": [
+    { "seq": 2, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 2, "op_ts": 200, "cols": { "name": "Journal", "sort_order": 0, "created_at": 100, "deleted_at": 200, "folder_id": null } } }
+  ]
+}

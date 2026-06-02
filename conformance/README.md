@@ -47,8 +47,18 @@ Each `*.vector.json` has a top-level `category` selecting how a runner interpret
   via a `cases` list of `{ "type", "wire" }` (notably `ColorInt` unsigned↔signed and `Blob` base64).
 - **`schema-hash`** *(asserted as guard tests, not vectors)* — each side has a registry guard test
   reproducing ForestNote's live v3 hash `724411eb…` and the canonical string (not a JSON vector).
-- **`compaction`** *(planned, Phase 5)* — given an op log + per-site cursors, assert the post-sweep
-  log (collapse-superseded; watermark-gated tombstone purge).
+- **`compaction`** *(asserted in Go; deferred in Kotlin — compaction is server-only)* — given a
+  sequenced op `log`, a `tombstone_cols` map (`table` → tombstone column), and a `watermark`, assert
+  the surviving entries equal `expected_log` exactly (same seqs, in order, matching op identity and
+  cols). Covers rule 1 collapse-superseded (winner kept at its original seq, no renumber), rule 2
+  watermark-gated tombstone purge (kept above the watermark = no-zombie; reclaimed at/below it), and
+  the mix of all rules. Shape:
+  ```json
+  { "category": "compaction", "name": "…",
+    "tombstone_cols": { "notebook": "deleted_at" }, "watermark": 4,
+    "log":          [ { "seq": 1, "op": { "table","pk","site_id","op_seq","op_ts","cols": {…} } }, … ],
+    "expected_log": [ { "seq": 4, "op": { … } }, … ] }
+  ```
 - **`schema-evolution`** *(planned, Phase 8)* — given a schema-hash change, assert the one-shot
   cursor reset to 0.
 

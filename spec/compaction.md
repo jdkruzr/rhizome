@@ -50,3 +50,21 @@ are legitimately part of current state, not bloat).
 - A compacted log still reconstructs the exact current state for a fresh `cursor=0` replica.
 - A tombstone is NOT purged while any non-evicted site's cursor is below it (no-zombie test).
 - The sweep is idempotent and safe to run concurrently with `appendOp`.
+
+## Implementation notes (reference relay)
+
+The reference Go relay splits this into a pure decision and an atomic application:
+
+- **`Sweep(log, tombstoneCols, watermark)`** is pure and idempotent — it computes the surviving
+  entries and is what the `compaction` vectors assert. `tombstoneCols` maps a table to its tombstone
+  column; a row whose tombstone column is missing or `null` is live.
+- **`Watermark(sites, now, horizon)`** computes `min(last_pull_seq)` over the non-evicted sites and
+  returns the (sorted) ids it evicted as stale. With **no active site** (all evicted, or none known)
+  the watermark is **0** — nothing is purged, which is safe since there is then no active reader to
+  protect. Eviction is returned for logging, never silent.
+- **`Run(store, …)`** applies `Sweep` to the live log inside the store's own lock, so it is atomic
+  with respect to `ApplyBatch`/`OpsSince`: an op appended just before the call is swept; one
+  appended just after lands cleanly after the swap.
+- The sweep preserves the per-site **`seen`** (dedup) set and the global high-water **`seq`**: a
+  re-delivered, already-compacted op stays deduped rather than being resurrected into the log, and
+  new ops keep climbing from the original high-water (no renumbering — rule 3).

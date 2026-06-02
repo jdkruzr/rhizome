@@ -1,0 +1,20 @@
+{
+  "category": "compaction",
+  "name": "compaction-mixed",
+  "description": "All rules together at watermark 4. NB1: three live versions collapse to the winner kept at seq 4. NB4: a tombstone at seq 2 (<= watermark) is purged. NB2: a tombstone at seq 5 (> watermark) is kept (no zombie). NB3: a live single row is kept. Survivors stay in ascending seq order with original seqs.",
+  "tombstone_cols": { "notebook": "deleted_at" },
+  "watermark": 4,
+  "log": [
+    { "seq": 1, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 1, "op_ts": 100, "cols": { "name": "v1", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 2, "op": { "table": "notebook", "pk": "00000000000000000000000NB4", "site_id": "0000000000000000000000000A", "op_seq": 2, "op_ts": 150, "cols": { "name": "Doomed", "sort_order": 0, "created_at": 140, "deleted_at": 150, "folder_id": null } } },
+    { "seq": 3, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 3, "op_ts": 200, "cols": { "name": "v2", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 4, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 4, "op_ts": 300, "cols": { "name": "v3", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 5, "op": { "table": "notebook", "pk": "00000000000000000000000NB2", "site_id": "0000000000000000000000000B", "op_seq": 1, "op_ts": 250, "cols": { "name": "Recently gone", "sort_order": 0, "created_at": 240, "deleted_at": 250, "folder_id": null } } },
+    { "seq": 6, "op": { "table": "notebook", "pk": "00000000000000000000000NB3", "site_id": "0000000000000000000000000B", "op_seq": 2, "op_ts": 120, "cols": { "name": "Alive", "sort_order": 0, "created_at": 120, "deleted_at": null, "folder_id": null } } }
+  ],
+  "expected_log": [
+    { "seq": 4, "op": { "table": "notebook", "pk": "00000000000000000000000NB1", "site_id": "0000000000000000000000000A", "op_seq": 4, "op_ts": 300, "cols": { "name": "v3", "sort_order": 0, "created_at": 100, "deleted_at": null, "folder_id": null } } },
+    { "seq": 5, "op": { "table": "notebook", "pk": "00000000000000000000000NB2", "site_id": "0000000000000000000000000B", "op_seq": 1, "op_ts": 250, "cols": { "name": "Recently gone", "sort_order": 0, "created_at": 240, "deleted_at": 250, "folder_id": null } } },
+    { "seq": 6, "op": { "table": "notebook", "pk": "00000000000000000000000NB3", "site_id": "0000000000000000000000000B", "op_seq": 2, "op_ts": 120, "cols": { "name": "Alive", "sort_order": 0, "created_at": 120, "deleted_at": null, "folder_id": null } } }
+  ]
+}

@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jdkruzr/rhizome/server-go/compaction"
 	"github.com/jdkruzr/rhizome/server-go/hlc"
 	"github.com/jdkruzr/rhizome/server-go/registry"
 	"github.com/jdkruzr/rhizome/server-go/syncstore"
@@ -65,6 +66,12 @@ type hlcStep struct {
 	Expect int64  `json:"expect"`
 }
 
+// logEntry is a sequenced op in a compaction vector's log / expected_log.
+type logEntry struct {
+	Seq int64  `json:"seq"`
+	Op  wireOp `json:"op"`
+}
+
 type vector struct {
 	Category      string              `json:"category"`
 	Name          string              `json:"name"`
@@ -74,6 +81,10 @@ type vector struct {
 	Cases         []wireCase          `json:"cases"`
 	Initial       int64               `json:"initial"`
 	Steps         []hlcStep           `json:"steps"`
+	TombstoneCols map[string]string   `json:"tombstone_cols"`
+	Watermark     int64               `json:"watermark"`
+	Log           []logEntry          `json:"log"`
+	ExpectedLog   []logEntry          `json:"expected_log"`
 }
 
 func loadVectors(t *testing.T) []struct {
@@ -114,7 +125,7 @@ func loadVectors(t *testing.T) []struct {
 var knownCols = registry.ForestNote().KnownCols()
 
 func TestVectors(t *testing.T) {
-	var merge, wireCodec, hlcN, skipped int
+	var merge, wireCodec, hlcN, compactionN, skipped int
 	for _, entry := range loadVectors(t) {
 		entry := entry
 		t.Run(entry.v.Name, func(t *testing.T) {
@@ -131,6 +142,9 @@ func TestVectors(t *testing.T) {
 			case "hlc":
 				assertHlc(t, entry.v)
 				hlcN++
+			case "compaction":
+				assertCompaction(t, entry.v)
+				compactionN++
 			case "":
 				t.Fatalf("%s: missing category", entry.file)
 			default:
@@ -145,7 +159,41 @@ func TestVectors(t *testing.T) {
 	if hlcN == 0 {
 		t.Fatalf("expected at least one hlc vector")
 	}
-	t.Logf("conformance: %d merge, %d wire-codec, %d hlc asserted, %d skipped", merge, wireCodec, hlcN, skipped)
+	if compactionN == 0 {
+		t.Fatalf("expected at least one compaction vector")
+	}
+	t.Logf("conformance: %d merge, %d wire-codec, %d hlc, %d compaction asserted, %d skipped", merge, wireCodec, hlcN, compactionN, skipped)
+}
+
+// assertCompaction drives compaction.Sweep over the vector's log and asserts the surviving entries
+// equal expected_log exactly — same seqs, in order, with matching op identity and cols.
+func assertCompaction(t *testing.T, v vector) {
+	if len(v.Log) == 0 {
+		t.Fatalf("%s: compaction vector has no log", v.Name)
+	}
+	entries := make([]compaction.Entry, len(v.Log))
+	for i, e := range v.Log {
+		entries[i] = compaction.Entry{Seq: e.Seq, Op: e.Op.toOp()}
+	}
+	kept, _ := compaction.Sweep(entries, v.TombstoneCols, v.Watermark)
+	if len(kept) != len(v.ExpectedLog) {
+		t.Fatalf("%s: kept %d entries, want %d", v.Name, len(kept), len(v.ExpectedLog))
+	}
+	for i, want := range v.ExpectedLog {
+		got := kept[i]
+		if got.Seq != want.Seq {
+			t.Fatalf("%s / entry %d: seq = %d, want %d (order or selection wrong)", v.Name, i, got.Seq, want.Seq)
+		}
+		w := want.Op
+		if got.Op.PK != w.PK || got.Op.Table != w.Table || got.Op.SiteID != w.SiteID || got.Op.OpSeq != w.OpSeq || got.Op.OpTs != w.OpTs {
+			t.Fatalf("%s / entry %d (seq %d): identity (%s,%s,%s,%d,%d) want (%s,%s,%s,%d,%d)",
+				v.Name, i, got.Seq, got.Op.Table, got.Op.PK, got.Op.SiteID, got.Op.OpSeq, got.Op.OpTs,
+				w.Table, w.PK, w.SiteID, w.OpSeq, w.OpTs)
+		}
+		if !colsEqual(got.Op.Cols, w.Cols) {
+			t.Fatalf("%s / entry %d (seq %d): cols mismatch\n got %v\nwant %v", v.Name, i, got.Seq, got.Op.Cols, w.Cols)
+		}
+	}
 }
 
 func assertHlc(t *testing.T, v vector) {
