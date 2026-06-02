@@ -2,16 +2,21 @@
 // the Go implementation. It is the Go half of the dual-language contract (the Kotlin client runs
 // the same vectors). See /conformance/README.md for the format and the loader contract.
 //
-// Phase 0: this harness DISCOVERS and STRUCTURALLY VALIDATES every vector and dispatches on
-// category. The actual `merge` assertion is skipped until syncstore.Merge lands (Phase 3); the
-// skip is loud (t.Skip with a reason), never a silent pass.
+// Phase 3: `merge` vectors are asserted against syncstore.Merge (registry-driven knownCols), and
+// `wire-codec` against wirecodec.Encode/Decode — proving Kotlin↔Go agreement. Any other category
+// is skipped LOUDLY (t.Skip with a reason), never a silent pass.
 package conformance
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/jdkruzr/rhizome/server-go/registry"
+	"github.com/jdkruzr/rhizome/server-go/syncstore"
+	"github.com/jdkruzr/rhizome/server-go/wirecodec"
 )
 
 // vectorsDir walks up from the test's working directory to find /conformance/vectors.
@@ -43,12 +48,22 @@ type wireOp struct {
 	Cols   map[string]json.RawMessage `json:"cols"`
 }
 
+func (w wireOp) toOp() syncstore.Op {
+	return syncstore.Op{Table: w.Table, PK: w.PK, SiteID: w.SiteID, OpSeq: w.OpSeq, OpTs: w.OpTs, Cols: w.Cols}
+}
+
+type wireCase struct {
+	Type string          `json:"type"`
+	Wire json.RawMessage `json:"wire"`
+}
+
 type vector struct {
 	Category      string              `json:"category"`
 	Name          string              `json:"name"`
 	Description   string              `json:"description"`
 	Ops           []wireOp            `json:"ops"`
 	ExpectedState map[string][]wireOp `json:"expected_state"`
+	Cases         []wireCase          `json:"cases"`
 }
 
 func loadVectors(t *testing.T) []struct {
@@ -85,9 +100,11 @@ func loadVectors(t *testing.T) []struct {
 	return out
 }
 
-// TestVectorsParseAndDispatch is the Phase-0 "running harness": every vector parses, has the
-// fields its category needs, and dispatches. Real assertions arrive with the implementations.
-func TestVectorsParseAndDispatch(t *testing.T) {
+// knownCols normalizes the (ForestNote-derived) merge vectors — the Go half of the contract.
+var knownCols = registry.ForestNote().KnownCols()
+
+func TestVectors(t *testing.T) {
+	var merge, wireCodec, skipped int
 	for _, entry := range loadVectors(t) {
 		entry := entry
 		t.Run(entry.v.Name, func(t *testing.T) {
@@ -96,18 +113,107 @@ func TestVectorsParseAndDispatch(t *testing.T) {
 			}
 			switch entry.v.Category {
 			case "merge":
-				if len(entry.v.Ops) == 0 {
-					t.Fatalf("%s: merge vector has no ops", entry.file)
-				}
-				if entry.v.ExpectedState == nil {
-					t.Fatalf("%s: merge vector has no expected_state", entry.file)
-				}
-				t.Skip("merge assertion pending syncstore.Merge (Phase 3)")
+				assertMerge(t, entry.v)
+				merge++
+			case "wire-codec":
+				assertWireCodec(t, entry.v)
+				wireCodec++
 			case "":
 				t.Fatalf("%s: missing category", entry.file)
 			default:
+				skipped++
 				t.Skipf("category %q not yet handled by the Go runner", entry.v.Category)
 			}
 		})
 	}
+	if merge == 0 {
+		t.Fatalf("expected at least one merge vector")
+	}
+	t.Logf("conformance: %d merge, %d wire-codec asserted, %d skipped", merge, wireCodec, skipped)
+}
+
+func assertMerge(t *testing.T, v vector) {
+	if len(v.Ops) == 0 {
+		t.Fatalf("%s: merge vector has no ops", v.Name)
+	}
+	if v.ExpectedState == nil {
+		t.Fatalf("%s: merge vector has no expected_state", v.Name)
+	}
+	ops := make([]syncstore.Op, len(v.Ops))
+	for i, w := range v.Ops {
+		ops[i] = w.toOp()
+	}
+	winners := syncstore.Merge(ops, knownCols)
+
+	for table, rows := range v.ExpectedState {
+		expected := make(map[string]wireOp, len(rows))
+		for _, r := range rows {
+			expected[r.PK] = r
+		}
+		got := make(map[string]syncstore.Op)
+		for k, w := range winners {
+			if k.Table == table {
+				got[k.PK] = w
+			}
+		}
+		if len(got) != len(expected) {
+			t.Fatalf("%s / %s: surviving pk count = %d, want %d", v.Name, table, len(got), len(expected))
+		}
+		for pk, er := range expected {
+			w, ok := got[pk]
+			if !ok {
+				t.Fatalf("%s / %s / %s: expected surviving row missing", v.Name, table, pk)
+			}
+			if w.SiteID != er.SiteID || w.OpSeq != er.OpSeq || w.OpTs != er.OpTs {
+				t.Fatalf("%s / %s / %s: winner key (%s,%d,%d) want (%s,%d,%d)",
+					v.Name, table, pk, w.SiteID, w.OpSeq, w.OpTs, er.SiteID, er.OpSeq, er.OpTs)
+			}
+			if !colsEqual(w.Cols, er.Cols) {
+				t.Fatalf("%s / %s / %s: cols mismatch\n got %v\nwant %v", v.Name, table, pk, w.Cols, er.Cols)
+			}
+		}
+	}
+}
+
+func assertWireCodec(t *testing.T, v vector) {
+	for i, c := range v.Cases {
+		native, err := wirecodec.Decode(registry.ColumnType(c.Type), c.Wire)
+		if err != nil {
+			t.Fatalf("%s / case %d (%s): decode: %v", v.Name, i, c.Type, err)
+		}
+		re, err := wirecodec.Encode(registry.ColumnType(c.Type), native)
+		if err != nil {
+			t.Fatalf("%s / case %d (%s): encode: %v", v.Name, i, c.Type, err)
+		}
+		if !jsonEqual(re, c.Wire) {
+			t.Fatalf("%s / case %d (%s): wire round-trip got %s want %s", v.Name, i, c.Type, re, c.Wire)
+		}
+	}
+}
+
+// colsEqual compares two cols maps for semantic JSON equality (formatting-independent).
+func colsEqual(a, b map[string]json.RawMessage) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || !jsonEqual(av, bv) {
+			return false
+		}
+	}
+	return true
+}
+
+// jsonEqual reports whether two raw JSON values are semantically equal (parsed, then DeepEqual) —
+// robust to whitespace and integer-vs-float formatting differences between the two sides.
+func jsonEqual(a, b json.RawMessage) bool {
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
 }
