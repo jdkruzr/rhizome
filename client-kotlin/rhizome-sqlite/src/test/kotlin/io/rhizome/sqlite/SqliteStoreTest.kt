@@ -100,6 +100,46 @@ class SqliteStoreTest {
         assertEquals(listOf(3L), adapter.pendingOps().map { it.opSeq }, "ops with op_seq ≤ through are pruned")
     }
 
+    private fun textOf(db: JdbcSqliteHandle, id: String): String? =
+        db.query("SELECT text FROM note WHERE id = ?", listOf(id)) { it.getString("text") }.single()
+
+    @Test
+    fun localCaptureBeatsStrictlyOlderRelayedOp() = runTest {
+        // Capturing a local edit records it as the row's current LWW winner (via rhizome_row_meta),
+        // so a later-arriving STRICTLY-OLDER relayed op cannot clobber it. Without this the author
+        // diverges: it never receives its own op back to re-establish the winner.
+        val db = newDb()
+        insertNote(db, "N1", "local-latest")
+        val adapter = SqliteStorageAdapter(db, registry, clock = { 1000L })
+        adapter.enableSync("siteA")
+        adapter.capture("note", "N1") // local write, op_ts = 1000
+
+        val older = Op(
+            table = "note", pk = "N1", siteId = "siteB", opSeq = 1, opTs = 500,
+            cols = buildJsonObject { put("text", "stale-remote"); put("created_at", 500L) },
+        )
+        adapter.applyRelayed(listOf(older))
+
+        assertEquals("local-latest", textOf(db, "N1"), "older relayed op must not overwrite the newer local write")
+    }
+
+    @Test
+    fun strictlyNewerRelayedOpBeatsLocalCapture() = runTest {
+        val db = newDb()
+        insertNote(db, "N1", "local")
+        val adapter = SqliteStorageAdapter(db, registry, clock = { 1000L })
+        adapter.enableSync("siteA")
+        adapter.capture("note", "N1") // op_ts = 1000
+
+        val newer = Op(
+            table = "note", pk = "N1", siteId = "siteB", opSeq = 1, opTs = 2000,
+            cols = buildJsonObject { put("text", "remote-newer"); put("created_at", 2000L) },
+        )
+        adapter.applyRelayed(listOf(newer))
+
+        assertEquals("remote-newer", textOf(db, "N1"), "strictly-newer relayed op overwrites the local write")
+    }
+
     /** A fake transport: records the request, replies once with a relayed op then drains. */
     private class FakeTransport(private val reply: SyncResponse) : SyncTransport {
         var lastRequest: SyncRequest? = null

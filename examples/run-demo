@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# run-demo — stand up the toy RhizomeSync relay and drive two independent clients through it,
+# showing convergence end to end: a create propagates, a conflicting edit resolves by LWW
+# (later writer wins), and a delete propagates as a tombstone. See examples/README.md.
+#
+# Prereqs: Go (>=1.25) and a JDK (the client builds with the Gradle wrapper). No network needed.
+# Usage:   ./run-demo [--port N] [--skip-build]
+set -euo pipefail
+
+PORT=8080
+SKIP_BUILD=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) PORT="$2"; shift 2 ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+SERVER_BIN="$HERE/example-server-go/rhizome-toy-server"
+CLIENT_BIN="$HERE/example-client-kotlin/build/install/example-client-kotlin/bin/example-client-kotlin"
+SERVER="http://localhost:$PORT"
+DBDIR="$(mktemp -d)"
+A="$DBDIR/alice.db"
+B="$DBDIR/bob.db"
+
+step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
+# Client wrappers: stdout (results) shown; stderr (sync/http logs) hidden for a clean demo.
+alice() { "$CLIENT_BIN" --db "$A" --server "$SERVER" "$@" 2>/dev/null; }
+bob()   { "$CLIENT_BIN" --db "$B" --server "$SERVER" "$@" 2>/dev/null; }
+
+if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  step "Building server (go) and client (gradle)"
+  ( cd "$HERE/example-server-go" && go build -o rhizome-toy-server . )
+  ( cd "$ROOT/client-kotlin" && ./gradlew --quiet :example-client-kotlin:installDist )
+fi
+
+step "Starting the relay on $SERVER"
+"$SERVER_BIN" -addr ":$PORT" &
+SRV_PID=$!
+cleanup() { kill "$SRV_PID" 2>/dev/null || true; rm -rf "$DBDIR"; }
+trap cleanup EXIT
+# Wait for the server to accept connections.
+for _ in $(seq 1 50); do curl -fsS "$SERVER/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
+
+step "1. Alice creates a note and syncs"
+alice create --title "Groceries" --body "milk, eggs"
+
+step "2. Bob syncs (pull) and lists — the note propagated"
+bob sync
+bob list
+
+ID="$(alice ids | head -1)"
+echo "(shared note id: $ID)"
+
+step "3. Conflict: Alice and Bob edit the SAME note, Bob last"
+alice edit --id "$ID" --title "Milk & eggs (edited by Alice)"
+bob   edit --id "$ID" --title "Bread (edited by Bob)"
+echo "Alice re-syncs to receive Bob's edit:"
+alice sync
+
+step "4. Both converge on the later write (LWW: Bob wins)"
+echo "Alice sees:"; alice list
+echo "Bob sees:";   bob list
+
+step "5. Alice deletes the note; Bob syncs — the tombstone propagates"
+alice delete --id "$ID"
+bob sync
+echo "Alice sees:"; alice list
+echo "Bob sees:";   bob list
+
+step "Done — two clients converged through a dumb relay (create, conflict, delete)."

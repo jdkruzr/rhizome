@@ -100,7 +100,7 @@ class SqliteStorageAdapter(
      * absent. Allocates the next per-site op_seq and stamps op_ts from the clock.
      */
     suspend fun capture(table: String, pk: String) {
-        currentSiteId() ?: return // dormant
+        val site = currentSiteId() ?: return // dormant
         val def = registry.byName[table] ?: return
         if (def.serverAuthoredOnly) return
         db.transaction {
@@ -111,6 +111,13 @@ class SqliteStorageAdapter(
                 "INSERT INTO rhizome_outbox (op_seq, tbl, pk, op_ts, cols) VALUES (?, ?, ?, ?, ?)",
                 listOf(seq, table, pk, opTs, cols.toString()),
             )
+            // Record this local write as the row's current LWW winner. The HLC guarantees its op_ts
+            // exceeds every op this device has applied (applyRelayed bumps the clock on receive), so
+            // the device's own latest write IS the winner until a strictly-greater relayed op
+            // arrives. Without this, a later strictly-older relayed op would clobber the local row —
+            // and since the relay never echoes an author's op back to itself, the author would never
+            // re-establish its value, so two devices editing the same row would diverge.
+            upsertRowMeta(Op(table, pk, site, seq, opTs, EMPTY_COLS))
             persistLastHlc()
         }
     }

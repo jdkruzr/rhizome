@@ -9,6 +9,8 @@ local.properties
 /server-go/bin/
 *.test
 *.out
+# Compiled demo relay (built by examples/run-demo)
+/examples/example-server-go/rhizome-toy-server
 
 # Editors / OS
 .idea/
