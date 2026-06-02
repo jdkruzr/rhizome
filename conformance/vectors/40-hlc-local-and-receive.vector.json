@@ -1,0 +1,17 @@
+{
+  "category": "hlc",
+  "name": "hlc-local-and-receive",
+  "description": "Millisecond-unit HLC (spec/hlc.md): a single clock processes a sequence of local-author and receive events with an injected wall clock. Exercises wall-tracking, same-ms ticking, receive jumping strictly past a remote, staying ahead, backward-clock monotonicity, and re-tracking once the wall catches up. last starts at `initial`; each step sets the wall to `wall`, runs `op`, and must yield `expect`.",
+  "initial": 0,
+  "steps": [
+    { "op": "local", "wall": 1000, "expect": 1000 },
+    { "op": "local", "wall": 1000, "expect": 1001 },
+    { "op": "local", "wall": 1000, "expect": 1002 },
+    { "op": "receive", "wall": 1000, "remote": 5000, "expect": 5001 },
+    { "op": "local", "wall": 1000, "expect": 5002 },
+    { "op": "local", "wall": 3000, "expect": 5003 },
+    { "op": "local", "wall": 6000, "expect": 6000 },
+    { "op": "receive", "wall": 1, "remote": 1700000000005, "expect": 1700000000006 },
+    { "op": "local", "wall": 1, "expect": 1700000000007 }
+  ]
+}

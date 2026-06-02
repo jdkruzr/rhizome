@@ -1,0 +1,10 @@
+{
+  "category": "hlc",
+  "name": "hlc-legacy-wallts-interop",
+  "description": "A legacy raw wall_ts (plain ms, no counter) flows through the HLC with no special path: absorbing one drags the clock strictly past it, and a subsequent local op sorts strictly after it. This is what lets mixed-version (legacy + HLC) devices sync correctly during cutover with no flag and no data migration.",
+  "initial": 0,
+  "steps": [
+    { "op": "receive", "wall": 1700000000000, "remote": 1700000000000, "expect": 1700000000001 },
+    { "op": "local", "wall": 1700000000000, "expect": 1700000000002 }
+  ]
+}

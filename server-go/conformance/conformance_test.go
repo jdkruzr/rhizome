@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jdkruzr/rhizome/server-go/hlc"
 	"github.com/jdkruzr/rhizome/server-go/registry"
 	"github.com/jdkruzr/rhizome/server-go/syncstore"
 	"github.com/jdkruzr/rhizome/server-go/wirecodec"
@@ -57,6 +58,13 @@ type wireCase struct {
 	Wire json.RawMessage `json:"wire"`
 }
 
+type hlcStep struct {
+	Op     string `json:"op"`
+	Wall   int64  `json:"wall"`
+	Remote int64  `json:"remote"`
+	Expect int64  `json:"expect"`
+}
+
 type vector struct {
 	Category      string              `json:"category"`
 	Name          string              `json:"name"`
@@ -64,6 +72,8 @@ type vector struct {
 	Ops           []wireOp            `json:"ops"`
 	ExpectedState map[string][]wireOp `json:"expected_state"`
 	Cases         []wireCase          `json:"cases"`
+	Initial       int64               `json:"initial"`
+	Steps         []hlcStep           `json:"steps"`
 }
 
 func loadVectors(t *testing.T) []struct {
@@ -104,7 +114,7 @@ func loadVectors(t *testing.T) []struct {
 var knownCols = registry.ForestNote().KnownCols()
 
 func TestVectors(t *testing.T) {
-	var merge, wireCodec, skipped int
+	var merge, wireCodec, hlcN, skipped int
 	for _, entry := range loadVectors(t) {
 		entry := entry
 		t.Run(entry.v.Name, func(t *testing.T) {
@@ -118,6 +128,9 @@ func TestVectors(t *testing.T) {
 			case "wire-codec":
 				assertWireCodec(t, entry.v)
 				wireCodec++
+			case "hlc":
+				assertHlc(t, entry.v)
+				hlcN++
 			case "":
 				t.Fatalf("%s: missing category", entry.file)
 			default:
@@ -129,7 +142,30 @@ func TestVectors(t *testing.T) {
 	if merge == 0 {
 		t.Fatalf("expected at least one merge vector")
 	}
-	t.Logf("conformance: %d merge, %d wire-codec asserted, %d skipped", merge, wireCodec, skipped)
+	if hlcN == 0 {
+		t.Fatalf("expected at least one hlc vector")
+	}
+	t.Logf("conformance: %d merge, %d wire-codec, %d hlc asserted, %d skipped", merge, wireCodec, hlcN, skipped)
+}
+
+func assertHlc(t *testing.T, v vector) {
+	var wall int64
+	clock := hlc.New(v.Initial, func() int64 { return wall })
+	for i, step := range v.Steps {
+		wall = step.Wall
+		var got int64
+		switch step.Op {
+		case "local":
+			got = clock.LocalEvent()
+		case "receive":
+			got = clock.ReceiveEvent(step.Remote)
+		default:
+			t.Fatalf("%s / step %d: unknown hlc op %q", v.Name, i, step.Op)
+		}
+		if got != step.Expect {
+			t.Fatalf("%s / step %d (%s, wall=%d): got %d want %d", v.Name, i, step.Op, step.Wall, got, step.Expect)
+		}
+	}
 }
 
 func assertMerge(t *testing.T, v vector) {

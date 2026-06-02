@@ -82,7 +82,9 @@ class SqliteStoreTest {
         val ops = adapter.pendingOps()
         assertEquals(listOf("N1", "N2"), ops.map { it.pk })
         assertEquals(listOf(1L, 2L), ops.map { it.opSeq })
-        assertTrue(ops.all { it.siteId == "siteA" && it.table == "note" && it.opTs == 7L })
+        assertTrue(ops.all { it.siteId == "siteA" && it.table == "note" })
+        // Both captured in the same wall-ms; the HLC ticks so op_ts is strictly monotonic (7, 8).
+        assertEquals(listOf(7L, 8L), ops.map { it.opTs })
         assertEquals("first", ops.first().cols["text"]!!.let { it.toString().trim('"') })
     }
 

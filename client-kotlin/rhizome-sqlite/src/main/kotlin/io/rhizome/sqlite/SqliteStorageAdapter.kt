@@ -2,6 +2,7 @@ package io.rhizome.sqlite
 
 import io.rhizome.core.ColumnDef
 import io.rhizome.core.ColumnType
+import io.rhizome.core.Hlc
 import io.rhizome.core.Merge
 import io.rhizome.core.Op
 import io.rhizome.core.Registry
@@ -30,8 +31,16 @@ class SqliteStorageAdapter(
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : SyncLocalStore {
 
+    /**
+     * The op_ts Hybrid Logical Clock (spec/hlc.md). Seeded from the persisted `last_hlc` and the
+     * greatest op_ts already in the outbox/row_meta, so a fresh process never reissues or regresses
+     * an op_ts — and so a ForestNote cutover inherits its existing (legacy wall_ts) timeline.
+     */
+    private val hlc: Hlc
+
     init {
         ensureSchema()
+        hlc = Hlc(last = seedHlc(), wallClock = clock)
     }
 
     /** Create the adapter's own bookkeeping tables (the host owns the registry's data tables). */
@@ -42,7 +51,8 @@ class SqliteStorageAdapter(
               id          INTEGER PRIMARY KEY CHECK (id = 0),
               site_id     TEXT,
               cursor      INTEGER NOT NULL DEFAULT 0,
-              next_op_seq INTEGER NOT NULL DEFAULT 1
+              next_op_seq INTEGER NOT NULL DEFAULT 1,
+              last_hlc    INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent(),
         )
@@ -96,10 +106,12 @@ class SqliteStorageAdapter(
         db.transaction {
             val cols = readRowAsCols(def, pk) ?: return@transaction // row gone (e.g. hard-deleted)
             val seq = nextOpSeqAndBump()
+            val opTs = hlc.localEvent()
             db.execute(
                 "INSERT INTO rhizome_outbox (op_seq, tbl, pk, op_ts, cols) VALUES (?, ?, ?, ?, ?)",
-                listOf(seq, table, pk, clock(), cols.toString()),
+                listOf(seq, table, pk, opTs, cols.toString()),
             )
+            persistLastHlc()
         }
     }
 
@@ -155,6 +167,10 @@ class SqliteStorageAdapter(
                     upsertRowMeta(op)
                 }
             }
+            // Absorb the relayed ops' timestamps so a later local capture sorts strictly after them
+            // (the causality guarantee — spec/hlc.md). Bump on every received op, winner or not.
+            hlc.receiveEvent(ops.maxOf { it.opTs })
+            persistLastHlc()
         }
     }
 
@@ -212,6 +228,20 @@ class SqliteStorageAdapter(
 
     private fun currentSiteId(): String? =
         db.query("SELECT site_id FROM rhizome_sync_state WHERE id = 0") { it.getString("site_id") }.firstOrNull()
+
+    /** Seed the HLC: never below the persisted value nor any op_ts already issued/applied. */
+    private fun seedHlc(): Long {
+        val stored = db.query("SELECT last_hlc FROM rhizome_sync_state WHERE id = 0") { it.getLong("last_hlc")!! }.firstOrNull() ?: 0
+        val maxOutbox = db.query("SELECT COALESCE(MAX(op_ts), 0) AS m FROM rhizome_outbox") { it.getLong("m")!! }.firstOrNull() ?: 0
+        val maxMeta = db.query("SELECT COALESCE(MAX(op_ts), 0) AS m FROM rhizome_row_meta") { it.getLong("m")!! }.firstOrNull() ?: 0
+        return maxOf(stored, maxOutbox, maxMeta)
+    }
+
+    /** Persist the HLC state so monotonicity survives process death (spec/hlc.md). */
+    private fun persistLastHlc() {
+        db.execute("INSERT OR IGNORE INTO rhizome_sync_state (id, site_id, cursor, next_op_seq, last_hlc) VALUES (0, NULL, 0, 1, 0)")
+        db.execute("UPDATE rhizome_sync_state SET last_hlc = ? WHERE id = 0", listOf(hlc.last))
+    }
 
     /** Read one row's synced columns, encoded to wire JSON in alphabetical key order, or null if absent. */
     private fun readRowAsCols(def: TableDef, pk: String): JsonObject? {

@@ -40,7 +40,12 @@ class ConformanceTest {
         val ops: List<WireOp> = emptyList(),
         @SerialName("expected_state") val expectedState: Map<String, List<ExpectedRow>> = emptyMap(),
         val cases: List<WireCase> = emptyList(),
+        val initial: Long = 0,
+        val steps: List<HlcStep> = emptyList(),
     )
+
+    @Serializable
+    private data class HlcStep(val op: String, val wall: Long, val remote: Long = 0, val expect: Long)
 
     private val json = Json { ignoreUnknownKeys = true }
     private val knownCols = ForestNoteRegistry.registry.knownCols
@@ -63,17 +68,34 @@ class ConformanceTest {
 
         var merge = 0
         var wireCodec = 0
+        var hlc = 0
         var deferred = 0
         for (f in files) {
             val v = json.decodeFromString(Vector.serializer(), f.readText())
             when (v.category) {
                 "merge" -> { assertMerge(v); merge++ }
                 "wire-codec" -> { assertWireCodec(v); wireCodec++ }
+                "hlc" -> { assertHlc(v); hlc++ }
                 else -> deferred++ // category not yet handled by the Kotlin runner
             }
         }
         assertTrue(merge > 0, "expected at least one merge vector")
-        println("conformance: ${files.size} vectors ($merge merge, $wireCodec wire-codec asserted, $deferred deferred)")
+        assertTrue(hlc > 0, "expected at least one hlc vector")
+        println("conformance: ${files.size} vectors ($merge merge, $wireCodec wire-codec, $hlc hlc asserted, $deferred deferred)")
+    }
+
+    private fun assertHlc(v: Vector) {
+        var wall = 0L
+        val clock = Hlc(last = v.initial, wallClock = { wall })
+        for ((i, step) in v.steps.withIndex()) {
+            wall = step.wall
+            val got = when (step.op) {
+                "local" -> clock.localEvent()
+                "receive" -> clock.receiveEvent(step.remote)
+                else -> fail("${v.name} / step $i: unknown hlc op ${step.op}")
+            }
+            assertEquals(step.expect, got, "${v.name} / step $i (${step.op}, wall=${step.wall})")
+        }
     }
 
     private fun assertWireCodec(v: Vector) {

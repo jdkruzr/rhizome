@@ -33,13 +33,20 @@ Each `*.vector.json` has a top-level `category` selecting how a runner interpret
   `(table, pk)` must equal `expected_state[table]` (compared as a set keyed by `pk`). Tables that
   appear as empty arrays in `expected_state` assert "no surviving rows." This is the bulk of the
   suite today (the 23 migrated vectors).
-- **`hlc`** *(planned, Phase 4)* — HLC stamping/compare: given a clock state and a sequence of
-  local-events / received-ops, assert the resulting timestamps and ordering (including mixed
-  legacy-`wall_ts`/HLC comparison and a causal-inversion case).
-- **`schema-hash`** *(planned, Phase 1/3)* — given a registry, assert the canonical string and the
-  resulting `SCHEMA_HASH` (including reproducing ForestNote's live v3 hash `724411eb…`).
-- **`wire-codec`** *(planned, Phase 1)* — per column type, assert `decode(encode(value)) == value`
-  and the exact JSON wire form (notably `ColorInt` sign-extension and `Blob` base64).
+- **`hlc`** *(asserted both sides)* — millisecond-unit HLC stamping (spec/hlc.md). A single clock
+  seeded at `initial` processes an ordered `steps` list; each step sets the injected wall clock to
+  `wall`, runs `op` (`"local"` or `"receive"` with a `remote` timestamp), and must yield `expect`:
+  ```json
+  { "category": "hlc", "name": "…", "initial": 0,
+    "steps": [ { "op": "local",   "wall": 1000, "expect": 1000 },
+               { "op": "receive", "wall": 1000, "remote": 5000, "expect": 5001 } ] }
+  ```
+  Covers wall-tracking, same-ms ticking, receive-jumps-past-remote, backward-clock monotonicity,
+  and legacy raw-`wall_ts` interop.
+- **`wire-codec`** *(asserted both sides)* — per column type, assert `encode(decode(wire)) == wire`
+  via a `cases` list of `{ "type", "wire" }` (notably `ColorInt` unsigned↔signed and `Blob` base64).
+- **`schema-hash`** *(asserted as guard tests, not vectors)* — each side has a registry guard test
+  reproducing ForestNote's live v3 hash `724411eb…` and the canonical string (not a JSON vector).
 - **`compaction`** *(planned, Phase 5)* — given an op log + per-site cursors, assert the post-sweep
   log (collapse-superseded; watermark-gated tombstone purge).
 - **`schema-evolution`** *(planned, Phase 8)* — given a schema-hash change, assert the one-shot
