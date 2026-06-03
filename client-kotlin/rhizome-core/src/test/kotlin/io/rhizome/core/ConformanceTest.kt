@@ -42,6 +42,12 @@ class ConformanceTest {
         val cases: List<WireCase> = emptyList(),
         val initial: Long = 0,
         val steps: List<HlcStep> = emptyList(),
+        // schema-evolution (§I.9). storedHash null = never reconciled.
+        @SerialName("stored_hash") val storedHash: String? = null,
+        @SerialName("current_hash") val currentHash: String = "",
+        val cursor: Long = 0,
+        @SerialName("expected_cursor") val expectedCursor: Long = 0,
+        @SerialName("expected_stored_hash") val expectedStoredHash: String = "",
     )
 
     @Serializable
@@ -69,6 +75,7 @@ class ConformanceTest {
         var merge = 0
         var wireCodec = 0
         var hlc = 0
+        var schemaEvo = 0
         var deferred = 0
         for (f in files) {
             val v = json.decodeFromString(Vector.serializer(), f.readText())
@@ -76,12 +83,20 @@ class ConformanceTest {
                 "merge" -> { assertMerge(v); merge++ }
                 "wire-codec" -> { assertWireCodec(v); wireCodec++ }
                 "hlc" -> { assertHlc(v); hlc++ }
+                "schema-evolution" -> { assertSchemaEvolution(v); schemaEvo++ }
                 else -> deferred++ // category not yet handled by the Kotlin runner
             }
         }
         assertTrue(merge > 0, "expected at least one merge vector")
         assertTrue(hlc > 0, "expected at least one hlc vector")
-        println("conformance: ${files.size} vectors ($merge merge, $wireCodec wire-codec, $hlc hlc asserted, $deferred deferred)")
+        assertTrue(schemaEvo > 0, "expected at least one schema-evolution vector")
+        println("conformance: ${files.size} vectors ($merge merge, $wireCodec wire-codec, $hlc hlc, $schemaEvo schema-evolution asserted, $deferred deferred)")
+    }
+
+    private fun assertSchemaEvolution(v: Vector) {
+        val outcome = SchemaEvolution.reconcile(v.storedHash, v.currentHash, v.cursor)
+        assertEquals(v.expectedCursor, outcome.cursor, "${v.name}: cursor")
+        assertEquals(v.expectedStoredHash, outcome.storedHash, "${v.name}: stored hash")
     }
 
     private fun assertHlc(v: Vector) {

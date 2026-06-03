@@ -17,6 +17,7 @@ import (
 	"github.com/jdkruzr/rhizome/server-go/compaction"
 	"github.com/jdkruzr/rhizome/server-go/hlc"
 	"github.com/jdkruzr/rhizome/server-go/registry"
+	"github.com/jdkruzr/rhizome/server-go/schemaevo"
 	"github.com/jdkruzr/rhizome/server-go/syncstore"
 	"github.com/jdkruzr/rhizome/server-go/wirecodec"
 )
@@ -85,6 +86,12 @@ type vector struct {
 	Watermark     int64               `json:"watermark"`
 	Log           []logEntry          `json:"log"`
 	ExpectedLog   []logEntry          `json:"expected_log"`
+	// schema-evolution (§I.9). A null stored_hash unmarshals to "" (never reconciled).
+	StoredHash         string `json:"stored_hash"`
+	CurrentHash        string `json:"current_hash"`
+	Cursor             int64  `json:"cursor"`
+	ExpectedCursor     int64  `json:"expected_cursor"`
+	ExpectedStoredHash string `json:"expected_stored_hash"`
 }
 
 func loadVectors(t *testing.T) []struct {
@@ -125,7 +132,7 @@ func loadVectors(t *testing.T) []struct {
 var knownCols = registry.ForestNote().KnownCols()
 
 func TestVectors(t *testing.T) {
-	var merge, wireCodec, hlcN, compactionN, skipped int
+	var merge, wireCodec, hlcN, compactionN, schemaEvoN, skipped int
 	for _, entry := range loadVectors(t) {
 		entry := entry
 		t.Run(entry.v.Name, func(t *testing.T) {
@@ -145,6 +152,9 @@ func TestVectors(t *testing.T) {
 			case "compaction":
 				assertCompaction(t, entry.v)
 				compactionN++
+			case "schema-evolution":
+				assertSchemaEvolution(t, entry.v)
+				schemaEvoN++
 			case "":
 				t.Fatalf("%s: missing category", entry.file)
 			default:
@@ -162,7 +172,22 @@ func TestVectors(t *testing.T) {
 	if compactionN == 0 {
 		t.Fatalf("expected at least one compaction vector")
 	}
-	t.Logf("conformance: %d merge, %d wire-codec, %d hlc, %d compaction asserted, %d skipped", merge, wireCodec, hlcN, compactionN, skipped)
+	if schemaEvoN == 0 {
+		t.Fatalf("expected at least one schema-evolution vector")
+	}
+	t.Logf("conformance: %d merge, %d wire-codec, %d hlc, %d compaction, %d schema-evolution asserted, %d skipped", merge, wireCodec, hlcN, compactionN, schemaEvoN, skipped)
+}
+
+// assertSchemaEvolution drives the §I.9 reconcile rule over the vector's (stored, current, cursor)
+// and asserts the resulting cursor + stored hash match — the canonical one-shot cursor-reset rule.
+func assertSchemaEvolution(t *testing.T, v vector) {
+	gotCursor, gotStored := schemaevo.Reconcile(v.StoredHash, v.CurrentHash, v.Cursor)
+	if gotCursor != v.ExpectedCursor {
+		t.Fatalf("%s: cursor got %d want %d", v.Name, gotCursor, v.ExpectedCursor)
+	}
+	if gotStored != v.ExpectedStoredHash {
+		t.Fatalf("%s: stored hash got %q want %q", v.Name, gotStored, v.ExpectedStoredHash)
+	}
 }
 
 // assertCompaction drives compaction.Sweep over the vector's log and asserts the surviving entries

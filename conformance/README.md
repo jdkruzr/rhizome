@@ -59,8 +59,17 @@ Each `*.vector.json` has a top-level `category` selecting how a runner interpret
     "log":          [ { "seq": 1, "op": { "table","pk","site_id","op_seq","op_ts","cols": {…} } }, … ],
     "expected_log": [ { "seq": 4, "op": { … } }, … ] }
   ```
-- **`schema-evolution`** *(planned, Phase 8)* — given a schema-hash change, assert the one-shot
-  cursor reset to 0.
+- **`schema-evolution`** *(asserted both sides)* — the §I.9 reconcile rule (`schemaevo.Reconcile` /
+  `SchemaEvolution.reconcile`): given a stored vs current synced-schema hash and a cursor, assert the
+  resulting cursor (reset to 0 on a change — incl. a null/empty stored marker, the post-cutover case —
+  else unchanged) and that the stored hash always advances to current (so the reset fires at most
+  once). The cursor reset itself is applied app-side against the host's own store (the adapter holds
+  no schema generation); this category pins the rule both implementations agree on. Shape:
+  ```json
+  { "category": "schema-evolution", "name": "…",
+    "stored_hash": "…" | null, "current_hash": "…", "cursor": 42,
+    "expected_cursor": 0, "expected_stored_hash": "…" }
+  ```
 
 ## Loader contract
 

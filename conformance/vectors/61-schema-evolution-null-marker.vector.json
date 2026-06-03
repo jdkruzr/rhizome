@@ -1,0 +1,10 @@
+{
+  "category": "schema-evolution",
+  "name": "schema-evolution-null-marker",
+  "description": "§I.9 cutover case: a device that has never recorded a reconciled schema hash (null marker — e.g. first launch after the RhizomeSync cutover migrated the column in NULL) is treated as a hash change. The cursor resets to 0 for one self-healing full re-pull and the marker is stamped.",
+  "stored_hash": null,
+  "current_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe",
+  "cursor": 99,
+  "expected_cursor": 0,
+  "expected_stored_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe"
+}

@@ -1,0 +1,10 @@
+{
+  "category": "schema-evolution",
+  "name": "schema-evolution-unchanged",
+  "description": "§I.9 one-shot property: a device whose stored hash already equals the current hash (it has reconciled this generation) does NOT reset — its cursor is left exactly where the last session advanced it. This is what makes the reset fire at most once.",
+  "stored_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe",
+  "current_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe",
+  "cursor": 7,
+  "expected_cursor": 7,
+  "expected_stored_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe"
+}

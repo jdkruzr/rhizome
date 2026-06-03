@@ -1,0 +1,10 @@
+{
+  "category": "schema-evolution",
+  "name": "schema-evolution-hash-change",
+  "description": "§I.9: a device upgraded to a build whose synced-schema hash differs from the one it last reconciled against. The cursor resets to 0 (one-shot full re-pull) and the stored hash advances to the new one.",
+  "stored_hash": "0000000000000000000000000000000000000000000000000000000000000001",
+  "current_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe",
+  "cursor": 42,
+  "expected_cursor": 0,
+  "expected_stored_hash": "724411eb845ad3487393a77cb5559690e69332c35fdb5ee3e85c1767bf71f3fe"
+}
