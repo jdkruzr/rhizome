@@ -41,6 +41,15 @@ class SyncEngine(
     private val schemaHash: String,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val onRejected: (List<RejectedOp>) -> Unit = {},
+    /**
+     * Max outbound ops per `POST /sync/v1`. The download is server-paged (has_more); the UPLOAD
+     * must be client-paged too, or a large outbox — e.g. a fresh device's full backfill — serializes
+     * into one giant request body and OOMs a memory-constrained client. Each round sends the lowest
+     * [pushBatchLimit] op_seqs (pendingOps is op_seq-ordered); the server's contiguous accepted_through
+     * prunes exactly those, so the next round carries the following page. The session loops until BOTH
+     * the pull (has_more) and the push (pendingOps) are drained.
+     */
+    private val pushBatchLimit: Int = 500,
     private val log: (String) -> Unit = {},
 ) {
     private val _status = MutableStateFlow<SyncStatus>(SyncStatus.Idle)
@@ -53,11 +62,14 @@ class SyncEngine(
         }
         _status.value = SyncStatus.Syncing
         while (true) {
+            // Page the upload: send at most pushBatchLimit ops (the lowest op_seqs) this round, so a
+            // large backfill never builds one oversized request body. The server prunes them via
+            // accepted_through and the loop sends the next page.
             val request = SyncRequest(
                 schemaHash = schemaHash,
                 siteId = site,
                 cursor = store.cursor(),
-                ops = store.pendingOps().map { it.toWire() },
+                ops = store.pendingOps().take(pushBatchLimit).map { it.toWire() },
             )
             log("POST /sync/v1 site=$site cursor=${request.cursor} ops=${request.ops.size} schema=${schemaHash.take(8)}…")
             when (val outcome = transport.post(request)) {
@@ -75,11 +87,14 @@ class SyncEngine(
                         store.applyRelayed(resp.ops.map { it.toOp() })
                     }
                     store.setCursor(resp.cursor) // authoritative, even on rollback
-                    if (!resp.hasMore) {
+                    // Done only when the server has nothing more to relay AND our outbox is drained.
+                    // (markAckedThrough just pruned the acked page, so pendingOps reflects what's left.)
+                    val morePending = store.pendingOps().isNotEmpty()
+                    if (!resp.hasMore && !morePending) {
                         _status.value = SyncStatus.Synced(clock())
                         return SyncResult.Success
                     }
-                    // has_more: loop — pendingOps/cursor now reflect the just-applied page.
+                    // Loop: server has_more, or we still have queued ops to push.
                 }
                 is SyncOutcome.HttpError -> {
                     log("← HTTP ${outcome.code}${outcome.body?.let { " body=${it.take(200)}" } ?: ""}")

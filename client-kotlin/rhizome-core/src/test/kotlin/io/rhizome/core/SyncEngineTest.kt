@@ -23,7 +23,11 @@ class SyncEngineTest {
         override suspend fun cursor() = cur
         override suspend fun pendingOps() = pending.toList()
         override suspend fun applyRelayed(ops: List<Op>) { applied += ops }
-        override suspend fun markAckedThrough(through: Long) { ackedThrough = through }
+        override suspend fun markAckedThrough(through: Long) {
+            ackedThrough = through
+            // Mirror the real adapter: settled ops (op_seq <= through) are pruned from the outbox.
+            pending.removeAll { it.opSeq <= through }
+        }
         override suspend fun setCursor(cursor: Long) { cur = cursor; cursorsSet += cursor }
     }
 
@@ -67,6 +71,30 @@ class SyncEngineTest {
         assertEquals(20, store.cur)
         assertEquals(0, transport.requests[0].cursor)
         assertEquals(10, transport.requests[1].cursor, "second request carries the adopted cursor")
+    }
+
+    @Test
+    fun pagesTheUploadByPushBatchLimit() = runTest {
+        // A fresh device's full backfill: 1200 queued ops must NOT go out in one request (that OOMs
+        // a memory-constrained client). With pushBatchLimit=500 it pages 500/500/200, draining the
+        // outbox across three uploads even though the server reports has_more=false each time.
+        val pending = (1..1200L).map { op("NB$it", it, it) }.toMutableList()
+        val store = FakeStore(cur = 0, pending = pending)
+        val transport = FakeTransport(
+            listOf(
+                SyncOutcome.Ok(SyncResponse(acceptedThrough = 500, ops = emptyList(), cursor = 0, hasMore = false)),
+                SyncOutcome.Ok(SyncResponse(acceptedThrough = 1000, ops = emptyList(), cursor = 0, hasMore = false)),
+                SyncOutcome.Ok(SyncResponse(acceptedThrough = 1200, ops = emptyList(), cursor = 0, hasMore = false)),
+            ),
+        )
+        val result = SyncEngine(
+            store, transport, schemaHash = "H", clock = { 1L }, pushBatchLimit = 500,
+        ).syncOnce()
+
+        assertEquals(SyncResult.Success, result)
+        assertEquals(3, transport.requests.size, "1200 ops / 500 per page = 3 uploads")
+        assertEquals(listOf(500, 500, 200), transport.requests.map { it.ops.size }, "each page capped at the limit")
+        assertTrue(store.pending.isEmpty(), "outbox fully drained")
     }
 
     @Test
