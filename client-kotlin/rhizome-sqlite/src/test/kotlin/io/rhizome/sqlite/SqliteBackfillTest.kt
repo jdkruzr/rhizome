@@ -2,9 +2,12 @@ package io.rhizome.sqlite
 
 import io.rhizome.core.ColumnDef
 import io.rhizome.core.ColumnType
+import io.rhizome.core.Op
 import io.rhizome.core.Registry
 import io.rhizome.core.TableDef
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -60,6 +63,44 @@ class SqliteBackfillTest {
         db.execute("INSERT INTO note (id, text, created_at) VALUES (?, ?, ?)", listOf("N1", "t", 1L))
         val adapter = SqliteStorageAdapter(db, registry)
         adapter.backfill()
+        assertTrue(outboxPks(db).isEmpty())
+    }
+
+    @Test
+    fun backfillUntrackedCapturesOnlyRowsWithoutProvenance() = runTest {
+        val db = newDb()
+        db.execute("INSERT INTO note (id, text, created_at) VALUES (?, ?, ?)", listOf("local", "t", 1L))
+        db.execute("INSERT INTO server_text (id, text, created_at) VALUES (?, ?, ?)", listOf("server", "ocr", 1L))
+        val adapter = SqliteStorageAdapter(db, registry, clock = { 3000L })
+        adapter.enableSync("siteA")
+        adapter.applyRelayed(
+            listOf(
+                Op(
+                    table = "note",
+                    pk = "remote",
+                    siteId = "siteB",
+                    opSeq = 1,
+                    opTs = 2000L,
+                    cols = buildJsonObject {
+                        put("text", "from server")
+                        put("created_at", 2000L)
+                        put("deleted_at", null as String?)
+                    },
+                ),
+            ),
+        )
+
+        adapter.backfillUntracked()
+
+        assertEquals(listOf("local"), outboxPks(db), "remote row has provenance; only local untracked row is captured")
+    }
+
+    @Test
+    fun backfillUntrackedIsNoOpWhenDisabled() = runTest {
+        val db = newDb()
+        db.execute("INSERT INTO note (id, text, created_at) VALUES (?, ?, ?)", listOf("N1", "t", 1L))
+        val adapter = SqliteStorageAdapter(db, registry)
+        adapter.backfillUntracked()
         assertTrue(outboxPks(db).isEmpty())
     }
 }

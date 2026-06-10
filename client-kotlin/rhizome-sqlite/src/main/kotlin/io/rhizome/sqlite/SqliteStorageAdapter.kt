@@ -136,6 +136,22 @@ class SqliteStorageAdapter(
         }
     }
 
+    /**
+     * Enqueue capture ops only for rows with no known Rhizome provenance. This is for pull-first
+     * join flows: relayed rows already have `rhizome_row_meta` from [applyRelayed], while genuinely
+     * local pre-sync rows do not.
+     */
+    suspend fun backfillUntracked() {
+        currentSiteId() ?: return // dormant
+        for (def in registry.tables) {
+            if (def.serverAuthoredOnly) continue
+            val pks = db.query("SELECT ${def.pk} AS pk FROM ${def.name}") { it.getString("pk")!! }
+            for (pk in pks) {
+                if (!hasRowMeta(def.name, pk)) capture(def.name, pk)
+            }
+        }
+    }
+
     override suspend fun siteId(): String? = currentSiteId()
 
     override suspend fun cursor(): Long =
@@ -203,6 +219,12 @@ class SqliteStorageAdapter(
             .firstOrNull() ?: return true
         return Merge.less(stored, incoming)
     }
+
+    private fun hasRowMeta(table: String, pk: String): Boolean =
+        db.query(
+            "SELECT 1 AS present FROM rhizome_row_meta WHERE tbl = ? AND pk = ? LIMIT 1",
+            listOf(table, pk),
+        ) { true }.firstOrNull() == true
 
     /** Dynamic `INSERT … ON CONFLICT(pk) DO UPDATE` of [op]'s decoded columns into [table]. */
     private fun upsertRow(table: TableDef, op: Op) {
