@@ -29,14 +29,18 @@ func strokeOp(site, pk string, opSeq, opTs int64) syncstore.Op {
 	return syncstore.Op{
 		Table: "stroke", PK: pk, SiteID: site, OpSeq: opSeq, OpTs: opTs,
 		Cols: map[string]json.RawMessage{
-			"page_id":       json.RawMessage(`"` + pk26("PAGE") + `"`),
-			"color":         json.RawMessage(`4278190080`),
-			"pen_width_min": json.RawMessage(`2`),
-			"pen_width_max": json.RawMessage(`8`),
-			"points":        json.RawMessage(`"AAEC"`),
-			"z":             json.RawMessage(`5`),
-			"created_at":    json.RawMessage(`100`),
-			"deleted_at":    json.RawMessage(`null`),
+			"page_id":        json.RawMessage(`"` + pk26("PAGE") + `"`),
+			"color":          json.RawMessage(`4278190080`),
+			"pen_width_min":  json.RawMessage(`2`),
+			"pen_width_max":  json.RawMessage(`8`),
+			"points":         json.RawMessage(`"AAEC"`),
+			"brush_kind":     json.RawMessage(`"fountain"`),
+			"brush_version":  json.RawMessage(`1`),
+			"brush_seed":     json.RawMessage(`123`),
+			"point_dynamics": json.RawMessage(`null`),
+			"z":              json.RawMessage(`5`),
+			"created_at":     json.RawMessage(`100`),
+			"deleted_at":     json.RawMessage(`null`),
 		},
 	}
 }
