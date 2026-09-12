@@ -18,8 +18,10 @@ A replica persists a `schema_generation` marker alongside its current `SCHEMA_HA
 **first advertises a new `SCHEMA_HASH`** (i.e. the app upgraded and its registry changed), it
 **resets its pull cursor to 0 exactly once**, forcing a full re-pull of the relay backlog.
 
-This is safe and cheap because the merge is idempotent LWW: re-applying already-seen ops is a
-no-op, and ops for the newly-modeled tables/columns now materialize. Gate it like a run-once
+For newly modeled tables this works because merge is idempotent LWW: re-applying already-seen
+ops is a no-op, and previously unknown tables now materialize. Existing-table columns require the
+targeted repair below: their row versions may already match and normal LWW must remain strict.
+Gate the cursor reset like a run-once
 generation bump (the mechanism ForestNote already uses for `SYNC_BACKFILL_VERSION`) so it fires
 exactly on the transition, not on every launch.
 
@@ -30,6 +32,41 @@ on startup / enableSync:
      pull_cursor = 0                 // one-shot full re-pull
      stored_schema_hash = current
 ```
+
+Cursor reset and marker write must share one real transaction. The marker means replay was
+scheduled, not admitted or completed; the durable response cursor resumes partial replay.
+
+## Explicit additive-column recovery (Kotlin SQLite adapter)
+
+At a known forward-migration boundary call `SqliteStorageAdapter.prepareColumnUpgrade(previousRegistry)`
+on the shared writer, inside the same real transaction as the host's DDL/version/marker changes.
+Never guess the previous registry from NULL/default row values or blindly pass an old registry to
+an already-current library. Removed/changed columns, PK/tombstone/ownership changes, and additions
+to incoming-policy-managed tables are rejected; those need dedicated migrations.
+
+The adapter records a durable one-shot source/target plan and per-row repair tickets containing
+the original `(op_ts, op_seq, site_id)` and only the newly added columns. Ticket enumeration stays
+in SQL. Cursor zero, tickets and the plan ledger commit atomically. Repeating the same plan leaves
+an in-progress cursor intact. Ordinary equal-version replay remains inert without a matching ticket.
+
+For an exact-version ticket, replay updates only its listed fields. It does not rewrite known
+columns, metadata or queued operations. A newer remote winner or local capture cancels tickets
+for the previous version. Repair uses UPDATE, not INSERT, so it cannot resurrect a locally purged
+row. Repair and ticket deletion join the response transaction; failed decoding/apply cannot ACK
+the outbox or advance its cursor through `acceptResponse`.
+
+Every requested field must be present; an explicit null is accepted only for a nullable column.
+Missing fields leave the ticket pending. Hosts must check `pendingColumnRepairs()` after replay
+and report incomplete recovery rather than success. An unavailable source requires explicit
+recovery policy; this API does not silently clear tickets or repeatedly rewind forever.
+
+Self-authored rows are excluded: the normal relay omits the requester's operations, and in a
+forward upgrade that author's old writes did not contain these columns. Keep their deterministic
+migration defaults and original outbox payloads. This does not qualify downgrade/restore/clone
+histories in which a same-site row once had a richer shape, nor repair missing provenance.
+
+This mechanism is implemented/tested in the working Kotlin adapter. It is not automatically
+activated by an app registry change, and requires host migration/lifecycle integration before use.
 
 ## Server side: hash grace window
 

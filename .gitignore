@@ -13,6 +13,8 @@ local.properties
 /examples/example-server-go/rhizome-toy-server
 
 # Editors / OS
+AGENTS.md
+CLAUDE.md
 .idea/
 .vscode/
 *.iml

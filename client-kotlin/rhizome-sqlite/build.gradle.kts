@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     kotlin("jvm") version "2.2.0"
     `maven-publish`
@@ -48,9 +50,15 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     // The library's own SqliteHandle binding for tests/JVM examples (cached via SQLDelight's driver).
     testImplementation("org.xerial:sqlite-jdbc:3.45.2.0")
+    testImplementation(project(":rhizome-http"))
 }
 
 tasks.test {
     useJUnit()
+    // Opt-in cross-language harness; changing its binary must rerun the test.
+    inputs.property("assetLab", providers.environmentVariable("RHIZOME_ASSET_TEST_SERVER").orElse(""))
+    providers.environmentVariable("RHIZOME_ASSET_TEST_SERVER").orNull?.let { inputs.file(it) }
+    inputs.property("assetBooks", providers.environmentVariable("RHIZOME_ASSET_TEST_BOOKS").orElse(""))
+    providers.environmentVariable("RHIZOME_ASSET_TEST_BOOKS").orNull?.split(File.pathSeparator)?.forEach { inputs.file(it) }
     testLogging { events("passed", "skipped", "failed") }
 }

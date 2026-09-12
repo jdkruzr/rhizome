@@ -67,6 +67,17 @@ Apps may register **custom column types** by supplying the codec + affinity.
   list (see `spec/protocol.md` §server and the Kotlin `SqliteStorageAdapter`).
 - **Backfill** — iterate declared tables in order, enqueue an op per existing PK.
 
+## Consumer parity checks
+
+The compatibility hash above covers **names only**. Equal hashes do not prove equal column
+types/nullability, primary keys, tombstone semantics or server-only flags. Consumers should
+compare complete typed descriptors in cross-language tests as well as canonical strings/hashes.
+ForestRead Stage 2D8 does this in the sibling
+[headless runner](../../ForestNote/docs/test-plans/forestread-stage-2/README.md), including the
+actual current ForestNote writer registry and its candidate reader extension. Reader domain
+rules remain in ForestNote/UltraBridge, not generic Rhizome. This adds no hash algorithm/version,
+production registry or protocol change.
+
 ## `serverAuthoredOnly`
 
 A table flagged `serverAuthoredOnly` is decoded and applied by clients but **never captured** by

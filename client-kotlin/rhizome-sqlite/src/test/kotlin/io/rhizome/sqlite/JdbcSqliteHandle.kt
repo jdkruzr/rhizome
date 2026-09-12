@@ -32,16 +32,16 @@ class JdbcSqliteHandle(private val conn: Connection) : SqliteHandle {
 
     override fun <T> transaction(body: () -> T): T {
         val prev = conn.autoCommit
-        conn.autoCommit = false
+        val savepoint = if (prev) { conn.autoCommit = false; null } else conn.setSavepoint()
         try {
             val result = body()
-            conn.commit()
+            if (prev) conn.commit() else conn.releaseSavepoint(savepoint)
             return result
         } catch (e: Throwable) {
-            conn.rollback()
+            if (prev) conn.rollback() else conn.rollback(savepoint)
             throw e
         } finally {
-            conn.autoCommit = prev
+            if (prev) conn.autoCommit = true
         }
     }
 

@@ -1,0 +1,126 @@
+{
+  "contract_version":1,
+  "suite":"rhizome-assets-v1",
+  "implementation_status":"pending",
+  "spec":"../../spec/assets-v1.md",
+  "chunk_bytes":262144,
+  "payloads":{
+    "two_chunks":{
+      "generator":{"kind":"repeat_byte","byte":65,"length":262149},
+      "sha256":"27b977cd4cd686fa69afab5a0d46a4aa2d3dba56e5f459b63ef5db53062fbe77",
+      "chunk_hashes":["97a2fc5541dcc9c06b99b2a84c34961fa0c3af20dba3968df2f96a56c6bc00c9","11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"]
+    },
+    "empty":{
+      "generator":{"kind":"repeat_byte","byte":0,"length":0},
+      "sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "chunk_hashes":[]
+    }
+  },
+  "action_definitions":{
+    "stage":["asset"],"put_chunk":["asset","index"],"complete":["asset"],
+    "manifest":["asset","start","limit"],"get_chunk":["asset","index"],
+    "restart":["side"],"download":["asset"],"capabilities":["auth"],
+    "metadata_ack":["through"],"compact":["watermark"],"reset_invalid":["asset"],
+    "transfer_generated":["byte_length","chunk_bytes"],"enqueue_note":["id"],
+    "drain":["unit_limit"],"query_outbox":["max_ops","target_bytes"],
+    "post_rows":["op_seqs"],"put_descriptor_conflict":["asset","byte_length"]
+  },
+  "cases":[
+    {
+      "id":"ASSET-01","requirement":"Descriptor and chunk ACKs are not final whole-object verification",
+      "initial":{},
+      "steps":[{"action":"stage","asset":"two_chunks","expect":{"http":201,"state":"staging"}},{"action":"put_chunk","asset":"two_chunks","index":0,"expect":{"http":204}},{"action":"complete","asset":"two_chunks","expect":{"http":409,"error":"missing_chunks"}},{"action":"put_chunk","asset":"two_chunks","index":1},{"action":"complete","asset":"two_chunks","expect":{"http":200,"state":"ready"}}],
+      "expected":{"server_state":"ready","verified_bytes":262149,"source_hash_equal":true}
+    },
+    {
+      "id":"ASSET-02","requirement":"Lost ACK and server restart reuse a durably committed chunk",
+      "initial":{},
+      "steps":[{"action":"stage","asset":"two_chunks"},{"action":"put_chunk","asset":"two_chunks","index":0,"drop_response":true},{"action":"restart","side":"server"},{"action":"manifest","asset":"two_chunks","start":0,"limit":256,"expect":{"present_indices":[0],"missing_indices":[1],"next_start":null}},{"action":"put_chunk","asset":"two_chunks","index":0,"expect":{"http":204}},{"action":"put_chunk","asset":"two_chunks","index":1},{"action":"complete","asset":"two_chunks"}],
+      "expected":{"chunk_rows":2,"server_state":"ready","verified_bytes":262149,"duplicate_physical_chunks":0}
+    },
+    {
+      "id":"ASSET-03","requirement":"Bad digest never advances verified bytes",
+      "initial":{},
+      "steps":[{"action":"stage","asset":"two_chunks"},{"action":"put_chunk","asset":"two_chunks","index":0,"corrupt_body_byte":0,"expect":{"http":422}},{"action":"manifest","asset":"two_chunks","start":0,"limit":256}],
+      "expected":{"present_indices":[],"missing_indices":[0,1],"verified_bytes":0,"server_state":"staging"}
+    },
+    {
+      "id":"ASSET-04","requirement":"Bad index/length and premature GET cannot expose staged content",
+      "initial":{},
+      "steps":[{"action":"stage","asset":"two_chunks"},{"action":"put_chunk","asset":"two_chunks","index":2,"expect":{"http":400}},{"action":"put_chunk","asset":"two_chunks","index":1,"declared_length":6,"expect":{"http":400}},{"action":"put_chunk","asset":"two_chunks","index":0},{"action":"get_chunk","asset":"two_chunks","index":0,"expect":{"http":409,"error":"asset_not_ready"}}],
+      "expected":{"server_state":"staging","verified_bytes":262144,"downloaded_bytes":0}
+    },
+    {
+      "id":"ASSET-05","requirement":"Chunk hashes alone do not prove root identity; invalid staging can be reset",
+      "initial":{"descriptor_hash_override":"0000000000000000000000000000000000000000000000000000000000000000"},
+      "steps":[{"action":"stage","asset":"two_chunks"},{"action":"put_chunk","asset":"two_chunks","index":0},{"action":"put_chunk","asset":"two_chunks","index":1},{"action":"complete","asset":"two_chunks","expect":{"http":422,"error":"asset_hash_mismatch","state":"invalid"}},{"action":"reset_invalid","asset":"two_chunks"}],
+      "expected":{"server_state":"staging","verified_bytes":0,"descriptor_changed":false,"ever_ready":false}
+    },
+    {
+      "id":"ASSET-06","requirement":"Download resumes from verified local chunks and verifies final bytes independently",
+      "initial":{"server_ready":["two_chunks"],"client_verified_indices":[0]},
+      "steps":[{"action":"restart","side":"client"},{"action":"download","asset":"two_chunks"}],
+      "expected":{"requested_chunk_indices":[1],"client_state":"ready","verified_bytes":262149,"source_hash_equal":true}
+    },
+    {
+      "id":"ASSET-07","requirement":"Authentication failure is not legacy fallback or permission to write guessed hashes",
+      "initial":{"auth":"invalid"},
+      "steps":[{"action":"capabilities","auth":"invalid","expect":{"http":401}},{"action":"stage","asset":"two_chunks","expect":{"http":401}},{"action":"get_chunk","asset":"two_chunks","index":0,"expect":{"http":401}}],
+      "expected":{"descriptor_rows":0,"verified_bytes":0,"legacy_fallback":false,"retry_until_auth_fixed":false}
+    },
+    {
+      "id":"ASSET-08","requirement":"Disk full cannot ACK an uncommitted chunk or advance metadata progress",
+      "initial":{"disk_full_after_descriptor":true,"metadata_cursor":42,"accepted_through":7},
+      "steps":[{"action":"stage","asset":"two_chunks"},{"action":"put_chunk","asset":"two_chunks","index":0,"expect":{"http":507}}],
+      "expected":{"verified_bytes":0,"metadata_cursor":42,"accepted_through":7,"server_state":"staging"}
+    },
+    {
+      "id":"ASSET-09","requirement":"Metadata ACK, including legacy clients, is not an asset ACK or GC proof",
+      "initial":{"required_asset":"two_chunks","asset_uploaded":false},
+      "steps":[{"action":"metadata_ack","through":99},{"action":"compact","watermark":99}],
+      "expected":{"metadata_synced":true,"server_asset_ready":false,"backed_up":false,"asset_gc_count":0}
+    },
+    {
+      "id":"ASSET-10","requirement":"Server-ready bytes without acknowledged metadata are not a complete backup",
+      "initial":{"server_ready":["two_chunks"],"pending_metadata":[1]},
+      "steps":[{"action":"complete","asset":"two_chunks","expect":{"http":200,"state":"ready"}}],
+      "expected":{"server_asset_ready":true,"metadata_synced":false,"backed_up":false}
+    },
+    {
+      "id":"ASSET-11","requirement":"Large transfer bounds memory and yields to ordinary note sync",
+      "initial":{"max_transfer_working_memory_bytes":33554432,"ready_generated_byte":65},
+      "steps":[{"action":"transfer_generated","byte_length":134217728,"chunk_bytes":262144},{"action":"enqueue_note","id":"note-op"},{"action":"drain","unit_limit":2}],
+      "expected":{"max_asset_requests_in_flight":1,"note_op_serviced":true,"full_asset_buffer_allocations":0,"peak_transfer_working_memory_lte":33554432,"largest_manifest_entries_lte":256}
+    },
+    {
+      "id":"ASSET-12","requirement":"Bounded outbox query is bounded at storage rather than after loading the corpus",
+      "initial":{"outbox_rows":100000,"encoded_row_bytes":1024},
+      "steps":[{"action":"query_outbox","max_ops":500,"target_bytes":4194304}],
+      "expected":{"returned_ops":500,"payload_rows_loaded_lte":501,"whole_outbox_materializations":0,"first_op_seq":1,"last_op_seq":500}
+    },
+    {
+      "id":"ASSET-13","requirement":"Oversized operation is explicit and never silently skipped or acknowledged",
+      "initial":{"pending_op_seqs":[1,2,3],"encoded_row_sizes":[1024,9000000,1024],"max_row_bytes":8388608,"cursor":42},
+      "steps":[{"action":"post_rows","op_seqs":[1],"expect":{"accepted_through":1}},{"action":"query_outbox","max_ops":500,"target_bytes":4194304}],
+      "expected":{"error":"oversized_op","offending_op_seq":2,"pending_op_seqs":[2,3],"accepted_through":1,"cursor":42,"posted_op_seq_3":false}
+    },
+    {
+      "id":"ASSET-14","requirement":"Ready assets cannot be downgraded or reset by a conflicting retry",
+      "initial":{"server_ready":["two_chunks"]},
+      "steps":[{"action":"put_descriptor_conflict","asset":"two_chunks","byte_length":"262150","expect":{"http":409}},{"action":"reset_invalid","asset":"two_chunks","expect":{"http":409}}],
+      "expected":{"server_state":"ready","verified_bytes":262149,"source_hash_equal":true}
+    },
+    {
+      "id":"ASSET-15","requirement":"Zero-byte generic assets have a verified identity without phantom chunks",
+      "initial":{},
+      "steps":[{"action":"stage","asset":"empty"},{"action":"manifest","asset":"empty","start":0,"limit":256,"expect":{"entries":[],"next_start":null}},{"action":"complete","asset":"empty"}],
+      "expected":{"server_state":"ready","verified_bytes":0,"chunk_rows":0,"source_hash_equal":true}
+    },
+    {
+      "id":"ASSET-16","requirement":"Client verifies received bytes even when server reports ready",
+      "initial":{"server_ready":["two_chunks"],"corrupt_get_index":0},
+      "steps":[{"action":"download","asset":"two_chunks"}],
+      "expected":{"client_state":"invalid","verified_bytes":0,"readable":false,"source_hash_equal":false}
+    }
+  ]
+}

@@ -54,6 +54,12 @@ To integrate RhizomeSync into your own app, follow the [integration guide](spec/
   [conformance policy](spec/conformance.md)
 - **[Conformance vectors](conformance/README.md)** — the vector format and how each side consumes
   the single source of truth.
+- **[Proposed assets-v1 contract](spec/assets-v1.md)** — Stage 1 specification for immutable binary
+  transfer and bounded row I/O; **not shipped or part of current conformance results**.
+  The [Stage 2A/B/C headless slices](../ForestNote/docs/test-plans/forestread-stage-2/README.md)
+  implement chunk storage/transfer, negotiation, bounded rows, paged reference discovery and durable
+  fair scheduling. Reader registries, host lifecycle/UI wiring and production capability activation
+  remain pending; the legacy engine is not switched over.
 
 ## Not in scope (by design)
 

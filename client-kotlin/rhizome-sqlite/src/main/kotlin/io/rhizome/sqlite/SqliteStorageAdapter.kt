@@ -9,6 +9,14 @@ import io.rhizome.core.Registry
 import io.rhizome.core.SyncLocalStore
 import io.rhizome.core.TableDef
 import io.rhizome.core.WireCodec
+import io.rhizome.core.BoundedSyncLocalStore
+import io.rhizome.core.RowPageBudget
+import io.rhizome.core.PendingRowPage
+import io.rhizome.core.OversizedOp
+import io.rhizome.core.RowWire
+import io.rhizome.core.SyncResponse
+import io.rhizome.core.toWire
+import io.rhizome.core.toOp
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -29,7 +37,16 @@ class SqliteStorageAdapter(
     private val db: SqliteHandle,
     private val registry: Registry,
     private val clock: () -> Long = { System.currentTimeMillis() },
-) : SyncLocalStore {
+    incomingPolicies: List<IncomingRowPolicy> = emptyList(),
+) : BoundedSyncLocalStore {
+    /** Preserve the existing three-argument/trailing-clock source call shape. */
+    constructor(db: SqliteHandle, registry: Registry, clock: () -> Long) : this(db, registry, clock, emptyList())
+    private val incomingRoutes = buildMap<String, IncomingRowPolicy> {
+        for (policy in incomingPolicies) for (table in policy.tables) {
+            require(table in registry.byName) { "Incoming policy table is not registered: $table" }
+            require(put(table, policy) == null) { "Overlapping incoming policies: $table" }
+        }
+    }
 
     /**
      * The op_ts Hybrid Logical Clock (spec/hlc.md). Seeded from the persisted `last_hlc` and the
@@ -37,14 +54,29 @@ class SqliteStorageAdapter(
      * an op_ts — and so a ForestNote cutover inherits its existing (legacy wall_ts) timeline.
      */
     private val hlc: Hlc
+    private val columnUpgrades: SqliteColumnUpgrades
 
     init {
         ensureSchema()
+        columnUpgrades = SqliteColumnUpgrades(db, registry)
         hlc = Hlc(last = seedHlc(), wallClock = clock)
     }
 
+    /** At an explicit, known previous-registry migration boundary, atomically
+     * schedule missing-column recovery and a full replay. Never guess the old
+     * registry from current row values. Host may enclose its own marker/DDL in
+     * this same real transaction. Does not enable sync or rewrite queued ops.
+     */
+    suspend fun prepareColumnUpgrade(previous: Registry): Boolean =
+        columnUpgrades.prepare(previous, localAuthor() ?: currentSiteId(), incomingRoutes.keys)
+
+    /** Nonzero after replay means source fields were unavailable; not completion. */
+    suspend fun pendingColumnRepairs(): Long = columnUpgrades.pending()
+
     /** Create the adapter's own bookkeeping tables (the host owns the registry's data tables). */
     private fun ensureSchema() {
+        // Explicit local author binding is separate from network opt-in. Legacy capture stays dormant.
+        db.execute("CREATE TABLE IF NOT EXISTS rhizome_local_author(id INTEGER PRIMARY KEY CHECK(id=0),site_id TEXT NOT NULL)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS rhizome_sync_state (
@@ -86,12 +118,43 @@ class SqliteStorageAdapter(
      * site id is never re-minted. Until this is called, [capture] is a no-op (sync ships dormant).
      */
     suspend fun enableSync(siteId: String) {
-        db.execute(
-            "INSERT OR IGNORE INTO rhizome_sync_state (id, site_id, cursor, next_op_seq) VALUES (0, ?, 0, 1)",
-            listOf(siteId),
-        )
-        // If the state row pre-existed (e.g. a cursor write before enable), adopt the id once.
-        db.execute("UPDATE rhizome_sync_state SET site_id = ? WHERE id = 0 AND site_id IS NULL", listOf(siteId))
+        db.transaction {
+            require(localAuthor() == null || localAuthor() == siteId) { "Sync site differs from durable local author" }
+            db.execute(
+                "INSERT OR IGNORE INTO rhizome_sync_state (id, site_id, cursor, next_op_seq) VALUES (0, ?, 0, 1)",
+                listOf(siteId),
+            )
+            // If the state row pre-existed (e.g. a cursor write before enable), adopt the id once.
+            db.execute("UPDATE rhizome_sync_state SET site_id = ? WHERE id = 0 AND site_id IS NULL", listOf(siteId))
+        }
+    }
+
+    /** Bind one lifetime author without enabling sync. Hosts persist/use this same identity at join.
+     * Call on the shared DB writer; never create a second active adapter/clock for the same library.
+     */
+    suspend fun bindLocalAuthor(siteId: String) = bindAuthor(siteId)
+
+    /** Existing durable author for host bootstrap; not evidence of network opt-in. */
+    suspend fun localAuthorId(): String? = localAuthor()
+
+    private fun bindAuthor(siteId: String) = db.transaction {
+        require(siteId.isNotBlank())
+        require(currentSiteId() == null || currentSiteId() == siteId) { "Local author differs from enabled sync site" }
+        require(localAuthor() == null || localAuthor() == siteId) { "Local author cannot change" }
+        db.execute("INSERT OR IGNORE INTO rhizome_local_author VALUES(0,?)", listOf(siteId))
+        db.execute("INSERT OR IGNORE INTO rhizome_sync_state(id,site_id,cursor,next_op_seq,last_hlc) VALUES(0,NULL,0,1,0)")
+    }
+
+    /** Explicit offline authoring. Final versions and complete operations commit together; no later
+     * promotion/restamping step. pendingOps/pendingPage/hasPending expose nothing until enableSync.
+     * Retain ALL operations until ACK: deleting superseded versions would leave sequence gaps.
+     * Host must include its domain mutation in the same real transaction as this capture.
+     */
+    suspend fun captureAuthored(table: String, pk: String, siteId: String) {
+        db.transaction {
+            bindAuthor(siteId)
+            captureAs(table, pk, siteId)
+        }
     }
 
     /**
@@ -101,6 +164,10 @@ class SqliteStorageAdapter(
      */
     suspend fun capture(table: String, pk: String) {
         val site = currentSiteId() ?: return // dormant
+        captureAs(table, pk, site)
+    }
+
+    private fun captureAs(table: String, pk: String, site: String) {
         val def = registry.byName[table] ?: return
         if (def.serverAuthoredOnly) return
         db.transaction {
@@ -129,6 +196,7 @@ class SqliteStorageAdapter(
      */
     suspend fun backfill() {
         currentSiteId() ?: return // dormant
+        require(localAuthor() == null) { "Full restamping backfill is unsafe for locally authored history; use backfillUntracked" }
         for (def in registry.tables) {
             if (def.serverAuthoredOnly) continue
             val pks = db.query("SELECT ${def.pk} AS pk FROM ${def.name}") { it.getString("pk")!! }
@@ -174,31 +242,104 @@ class SqliteStorageAdapter(
         }
     }
 
+    override suspend fun hasPending(): Boolean = currentSiteId() != null &&
+        db.query("SELECT 1 AS present FROM rhizome_outbox LIMIT 1") { true }.isNotEmpty()
+
+    override suspend fun pendingPage(budget: RowPageBudget): PendingRowPage {
+        val site = currentSiteId() ?: return PendingRowPage.Page(emptyList(), false)
+        val limits = budget.limits
+        require(budget.envelopeBytes in 0..limits.maxBodyBytes)
+        val ops = ArrayList<Op>()
+        var bytes = budget.envelopeBytes.toLong()
+        var after = 0L
+        while (true) {
+            // Do not load the cols TEXT of a poison row. CAST AS BLOB makes
+            // length count UTF-8 bytes (SQLite length(TEXT) counts characters).
+            val candidate = db.query("""SELECT op_seq,tbl,pk,op_ts,length(CAST(cols AS BLOB)) AS col_bytes,
+                CASE WHEN length(CAST(cols AS BLOB)) <= ? THEN cols ELSE NULL END AS cols
+                FROM rhizome_outbox WHERE op_seq > ? ORDER BY op_seq LIMIT 1""",
+                listOf(minOf(limits.maxRowBytes, limits.maxBodyBytes).toLong(), after)) { r ->
+                val seq = r.getLong("op_seq")!!
+                val head = Op(r.getString("tbl")!!, r.getString("pk")!!, site, seq, r.getLong("op_ts")!!, EMPTY_COLS)
+                // {} in the encoded header is replaced by the already-canonical cols JSON.
+                val size = RowWire.bytes(head.toWire()).toLong() - 2 + r.getLong("col_bytes")!!
+                Triple(head, size, r.getString("cols"))
+            }.singleOrNull() ?: return PendingRowPage.Page(ops, false)
+            if (ops.size == limits.maxOps) return PendingRowPage.Page(ops, true)
+            val (head, storedSize, cols) = candidate
+            val comma = if (ops.isEmpty()) 0 else 1
+            if (cols == null || storedSize > limits.maxRowBytes || budget.envelopeBytes + storedSize > limits.maxBodyBytes) {
+                return if (ops.isEmpty()) PendingRowPage.Oversized(OversizedOp(site, head.opSeq, storedSize))
+                else PendingRowPage.Page(ops, true)
+            }
+            val op = head.copy(cols = Json.parseToJsonElement(cols).jsonObject)
+            val size = RowWire.bytes(op.toWire()).toLong()
+            if (size > limits.maxRowBytes || budget.envelopeBytes + size > limits.maxBodyBytes) {
+                return if (ops.isEmpty()) PendingRowPage.Oversized(OversizedOp(site, head.opSeq, size))
+                else PendingRowPage.Page(ops, true)
+            }
+            if (ops.isNotEmpty() && (bytes + comma + size > limits.targetPageBytes || bytes + comma + size > limits.maxBodyBytes)) {
+                return PendingRowPage.Page(ops, true)
+            }
+            ops += op
+            bytes += comma + size
+            after = head.opSeq
+        }
+    }
+
+    override suspend fun acceptResponse(response: SyncResponse) {
+        val ops = response.ops.map { it.toOp() }
+        require(ops.size <= 500)
+        require(ops.all { it.opTs in 0 until Long.MAX_VALUE && it.opSeq > 0 }) { "Invalid incoming clock/sequence" }
+        val prepared = ops.filter { it.table in incomingRoutes }.groupBy { incomingRoutes.getValue(it.table) }
+            .map { (policy, rows) -> policy.prepare(rows) }
+        val direct = ops.filter { it.table !in incomingRoutes }
+        db.transaction {
+            require(localAuthor() == null || currentSiteId() != null) { "Cannot acknowledge offline author history before sync opt-in" }
+            prepared.forEach { it.commit(db) }
+            applyRelayedRows(direct, observe = false)
+            // Receipt is causal even when domain application waits for a dependency.
+            observeReceived(ops)
+            db.execute("DELETE FROM rhizome_outbox WHERE op_seq <= ?", listOf(response.acceptedThrough))
+            db.execute("UPDATE rhizome_sync_state SET cursor = ? WHERE id = 0", listOf(response.cursor))
+        }
+    }
+
     /**
      * Merge relayed ops into the host tables under row-level LWW (spec/merge.md). The batch is first
      * collapsed to one winner per (table, pk); each winner is applied only if it beats the version
      * recorded in `rhizome_row_meta`, so re-delivery of a seen op is a no-op. All in one transaction.
      */
     override suspend fun applyRelayed(ops: List<Op>) {
+        db.transaction { applyRelayedRows(ops) }
+    }
+
+    private fun applyRelayedRows(ops: List<Op>, observe: Boolean = true) {
         if (ops.isEmpty()) return
         val winners = Merge.merge(ops, registry.knownCols)
-        db.transaction {
-            for ((key, op) in winners) {
-                val table = registry.byName[key.table] ?: continue // unknown table: drop
-                if (winsOverStored(op)) {
-                    upsertRow(table, op)
-                    upsertRowMeta(op)
-                }
+        for ((key, op) in winners) {
+            val table = registry.byName[key.table] ?: continue // unknown table: drop
+            if (winsOverStored(op)) {
+                upsertRow(table, op)
+                upsertRowMeta(op)
+            } else {
+                columnUpgrades.repair(table, op)
             }
-            // Absorb the relayed ops' timestamps so a later local capture sorts strictly after them
-            // (the causality guarantee — spec/hlc.md). Bump on every received op, winner or not.
-            hlc.receiveEvent(ops.maxOf { it.opTs })
-            persistLastHlc()
         }
+        if (observe) observeReceived(ops)
+    }
+
+    private fun observeReceived(ops: List<Op>) {
+        if (ops.isEmpty()) return
+        // Absorb the relayed ops' timestamps so a later local capture sorts strictly after them
+        // (the causality guarantee — spec/hlc.md). Bump on every received op, winner or not.
+        hlc.receiveEvent(ops.maxOf { it.opTs })
+        persistLastHlc()
     }
 
     /** Prune settled (applied + quarantined) ops: drop every outbox op with op_seq ≤ [through]. */
     override suspend fun markAckedThrough(through: Long) {
+        require(localAuthor() == null || currentSiteId() != null) { "Cannot acknowledge offline author history before sync opt-in" }
         db.execute("DELETE FROM rhizome_outbox WHERE op_seq <= ?", listOf(through))
     }
 
@@ -240,6 +381,9 @@ class SqliteStorageAdapter(
     }
 
     private fun upsertRowMeta(op: Op) {
+        // A fresh local capture or a newer remote winner supersedes any repair
+        // pinned to the old version. Ordinary duplicate replay still stays inert.
+        columnUpgrades.forget(op.table, op.pk)
         db.execute(
             "INSERT INTO rhizome_row_meta (tbl, pk, op_ts, op_seq, site_id) VALUES (?, ?, ?, ?, ?) " +
                 "ON CONFLICT(tbl, pk) DO UPDATE SET op_ts = excluded.op_ts, op_seq = excluded.op_seq, site_id = excluded.site_id",
@@ -257,6 +401,9 @@ class SqliteStorageAdapter(
 
     private fun currentSiteId(): String? =
         db.query("SELECT site_id FROM rhizome_sync_state WHERE id = 0") { it.getString("site_id") }.firstOrNull()
+
+    private fun localAuthor(): String? =
+        db.query("SELECT site_id FROM rhizome_local_author WHERE id=0") { it.getString("site_id") }.singleOrNull()
 
     /** Seed the HLC: never below the persisted value nor any op_ts already issued/applied. */
     private fun seedHlc(): Long {
@@ -296,6 +443,7 @@ class SqliteStorageAdapter(
     /** Read and increment the per-site op_seq counter, returning the value to use for this op. */
     private fun nextOpSeqAndBump(): Long {
         val seq = db.query("SELECT next_op_seq FROM rhizome_sync_state WHERE id = 0") { it.getLong("next_op_seq")!! }.single()
+        require(seq in 1 until Long.MAX_VALUE) { "Author sequence exhausted" }
         db.execute("UPDATE rhizome_sync_state SET next_op_seq = ? WHERE id = 0", listOf(seq + 1))
         return seq
     }

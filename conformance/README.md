@@ -73,6 +73,11 @@ Each `*.vector.json` has a top-level `category` selecting how a runner interpret
 
 ## Loader contract
 
+A proposed, unimplemented capability belongs in `pending/`, not `vectors/`. The
+[assets-v1 pending catalog](pending/assets-v1.json) is a Stage 1 acceptance definition only;
+current Kotlin/Go runners do not execute it. See [pending policy](pending/README.md). A successful
+fixture-integrity check must never be reported as behavioral conformance.
+
 A runner discovers `vectors/*.vector.json`, parses each, dispatches on `category`, and fails with
 the vector `name` on mismatch. Unknown categories are skipped with a logged notice (so adding a
 new category doesn't break an implementation that hasn't caught up yet — but CI for a release
