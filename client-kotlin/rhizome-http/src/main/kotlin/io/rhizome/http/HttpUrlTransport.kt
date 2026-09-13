@@ -34,6 +34,8 @@ class HttpUrlTransport(
     private val connectTimeoutMs: Int = 15_000,
     private val readTimeoutMs: Int = 30_000,
     private val log: (String) -> Unit = {},
+    /** Optional connection routing; default platform transport/trust is unchanged. */
+    private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) : BoundedRowTransport {
 
     constructor(
@@ -54,7 +56,7 @@ class HttpUrlTransport(
             }
             val encoded = json.encodeToString(SyncRequest.serializer(), request).toByteArray(Charsets.UTF_8)
             if (limits != null && encoded.size > limits.maxBodyBytes) return@withContext SyncOutcome.HttpError(413, "body limit exceeded")
-            conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            conn = openConnection(URL(endpoint)).apply {
                 requestMethod = "POST"
                 doOutput = true
                 connectTimeout = connectTimeoutMs
@@ -115,7 +117,7 @@ class HttpUrlTransport(
         var connection: HttpURLConnection? = null
         try {
             require(endpoint.endsWith("/sync/v1")) { "Capability discovery requires a /sync/v1 endpoint" }
-            connection = (URL(endpoint.removeSuffix("/v1") + "/capabilities").openConnection() as HttpURLConnection).apply {
+            connection = openConnection(URL(endpoint.removeSuffix("/v1") + "/capabilities")).apply {
                 instanceFollowRedirects = false
                 connectTimeout = connectTimeoutMs
                 readTimeout = readTimeoutMs

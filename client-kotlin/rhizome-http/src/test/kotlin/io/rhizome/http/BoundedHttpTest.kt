@@ -8,6 +8,23 @@ import java.net.InetSocketAddress
 import kotlin.test.*
 
 class BoundedHttpTest {
+    @Test fun explicitConnectionRouteIsUsedForDiscoveryAndBoundedPost() = runBlocking {
+        val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        val routes=java.util.Collections.synchronizedList(mutableListOf<String>())
+        server.createContext("/sync/capabilities") { ex -> ex.sendResponseHeaders(401,-1);ex.close() }
+        server.createContext("/sync/v1") { ex -> ex.requestBody.close();ex.sendResponseHeaders(403,-1);ex.close() }
+        server.start()
+        try {
+            val transport=HttpUrlTransport("https://unresolved.invalid/sync/v1","Bearer fixture",openConnection={url ->
+                routes.add(url.toString())
+                java.net.URL("http://127.0.0.1:${server.address.port}${url.path}").openConnection() as java.net.HttpURLConnection
+            })
+            assertEquals(CapabilityOutcome.HttpError(401),transport.capabilities())
+            assertEquals(403,assertIs<SyncOutcome.HttpError>(transport.postBounded(
+                SyncRequest(schemaHash="schema",siteId="A",cursor=0,ops=emptyList()),RowLimits())).code)
+            assertEquals(listOf("https://unresolved.invalid/sync/capabilities","https://unresolved.invalid/sync/v1"),routes)
+        } finally {server.stop(0)}
+    }
     @Test fun emptyAndOversizedErrorBodiesPreserveHttpStatus() = runBlocking {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         var status = 401
