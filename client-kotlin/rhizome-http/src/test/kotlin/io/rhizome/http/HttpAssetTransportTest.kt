@@ -9,6 +9,24 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
 
 class HttpAssetTransportTest {
+    @Test fun nativeRouteRetainsBinaryBytesAndDigestValidation() = runBlocking {
+        val bytes=ByteArray(1024) {it.toByte()};val id=assetDigest(bytes)
+        val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        server.createContext("/") {ex ->
+            ex.responseHeaders.add("X-Rhizome-Chunk-SHA256",id)
+            ex.sendResponseHeaders(200,bytes.size.toLong());ex.responseBody.use {it.write(bytes)}
+        }
+        server.start()
+        try {
+            val seen=mutableListOf<String>()
+            val t=HttpAssetTransport("https://unresolved.invalid/sync/assets/v1","Bearer fixture",openConnection={url ->
+                seen+=url.toString()
+                java.net.URL("http://127.0.0.1:${server.address.port}${url.path}").openConnection() as java.net.HttpURLConnection
+            })
+            assertContentEquals(bytes,t.readChunk(id,0).bytes)
+            assertEquals(listOf("https://unresolved.invalid/sync/assets/v1/$id/chunks/0"),seen)
+        } finally {server.stop(0)}
+    }
     @Test fun acceptsStateOnlyRepliesAndDoesNotTreatAsyncVerificationAsReady() = runBlocking {
         val d = AssetDescriptor(assetDigest(byteArrayOf()), 0)
         var state = "staging"

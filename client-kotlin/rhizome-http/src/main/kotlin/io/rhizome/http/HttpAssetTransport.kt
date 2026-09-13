@@ -21,12 +21,14 @@ class HttpAssetTransport(
     private val authHeader: String,
     private val connectTimeoutMs: Int = 15_000,
     private val readTimeoutMs: Int = 30_000,
+    /** Optional native routing; platform TLS/hostname checks remain the default. */
+    private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) : AssetAccess {
     private val json = Json { ignoreUnknownKeys = true }
     private data class Response(val code: Int, val body: ByteArray, val digest: String?, val length: Long)
 
     private suspend fun request(method: String, path: String, body: ByteArray? = null, digest: String? = null): Response = withContext(Dispatchers.IO) {
-        val c = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
+        val c = openConnection(URL(baseUrl.trimEnd('/') + path))
         try {
             c.requestMethod = method
             c.instanceFollowRedirects = false
