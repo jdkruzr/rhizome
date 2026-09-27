@@ -4,6 +4,9 @@ Context split: 2026-09-27 UTC. Root `/home/jtd/rhizome`, branch
 `integration/forestread`. Implementation checkpoint before this documentation-only
 commit: `df45a06dace1cedbeffa32b82a7339a8ba61b36d`; worktree was clean.
 
+Forward checklist: [remaining steps](remaining-steps.md), distinguishing generic
+library qualification/publication from the paused host integration.
+
 ## Scope and checkpoint
 
 Rhizome owns the generic Kotlin/Go sync machinery: full-row operations, HLC,
